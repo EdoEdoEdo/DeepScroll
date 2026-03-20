@@ -104,6 +104,47 @@ body {
 }
 .signature:hover { color: var(--red); }
 
+/* ── STRATA BARS ──────────────────────────────────────── */
+.strata-container {
+  position: absolute;
+  top: 0; right: 0;
+  width: 45%; height: 100%;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: default;
+}
+.strata-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: min(500px, 70%);
+}
+.strata-bar {
+  height: 32px;
+  background: var(--ink);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  will-change: transform;
+  transition: none;
+}
+.bar-num {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.15em;
+  color: var(--red);
+}
+.bar-tag {
+  font-family: var(--mono);
+  font-size: 8px;
+  letter-spacing: 0.2em;
+  color: var(--paper);
+  opacity: 0.4;
+}
+
 /* ── MODEL SWITCH ────────────────────────────────────── */
 .model-switch {
   display: flex; align-items: center; gap: 0;

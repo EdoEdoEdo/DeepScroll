@@ -4,7 +4,7 @@ import { useState, useCallback, useRef } from "react";
 import type { DocumentaryData } from "@/app/utils/types";
 import type { LogLine } from "@/app/components/LoadingScreen";
 import { runPipeline } from "@/app/utils/pipeline";
-import { FALLBACK_INTERLUDES, INTERLUDE_BEFORE } from "@/app/utils/arc";
+import { FALLBACK_INTERLUDES } from "@/app/utils/arc";
 import { ScrollTrigger } from "@/app/utils/gsap";
 import QueryScreen from "@/app/components/QueryScreen";
 import LoadingScreen from "@/app/components/LoadingScreen";
@@ -122,14 +122,12 @@ export default function DeepScrollPage() {
 
           <section id="screen-doc">
             {documentary.chapters.map((ch, i) => {
-              // Map interlude positions to interlude text
-              const interludeIndex = i === 2 ? 0 : i === 4 ? 1 : -1;
-              const interludeText =
-                interludeIndex >= 0
-                  ? documentary.interludes?.[interludeIndex] ??
-                    FALLBACK_INTERLUDES[interludeIndex] ??
-                    FALLBACK_INTERLUDES[0]
-                  : null;
+              let interludeText: string | null = null;
+              if (i === 2) {
+                interludeText = documentary.interludes?.[0] ?? FALLBACK_INTERLUDES[0];
+              } else if (i === 4) {
+                interludeText = documentary.interludes?.[1] ?? FALLBACK_INTERLUDES[1];
+              }
 
               return (
                 <div key={i}>

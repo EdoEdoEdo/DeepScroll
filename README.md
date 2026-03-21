@@ -89,7 +89,7 @@ This is not a timeline. It's a dramaturgy. The difference matters: "2007, 2008, 
 ### Setup
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/deepscroll.git
+git clone https://github.com/EdoEdoEdo/DeepScroll.git
 cd deepscroll
 npm install
 ```

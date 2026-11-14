@@ -2,6 +2,7 @@ interface GuardianBoxProps {
   excerpt: string;
   date: string;
   section: string;
+  byline?: string;
   articleId?: string;
   onReadMore?: (articleId: string) => void;
 }
@@ -10,6 +11,7 @@ export default function GuardianBox({
   excerpt,
   date,
   section,
+  byline,
   articleId,
   onReadMore,
 }: GuardianBoxProps) {
@@ -25,7 +27,7 @@ export default function GuardianBox({
         {excerpt ? (
           <>
             &ldquo;{excerpt}&rdquo;{" "}
-            <em>[Guardian excerpt · real copy]</em>
+            <em>[Guardian excerpt · real copy{byline ? ` · ${byline}` : ""}]</em>
           </>
         ) : (
           <em>[Excerpt not available for this article]</em>

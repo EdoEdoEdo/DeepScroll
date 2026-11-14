@@ -2,84 +2,100 @@ import type { GuardianResult, ScoredArticle } from "./types";
 
 // ── Weight Configuration ────────────────────────────────
 
-const WEIGHTS = {
+/**
+ * Scorer v3 — picks the best primary source for a chapter window.
+ * Media used to weigh 30%, but nearly every Guardian article has a
+ * thumbnail, so it decided nothing; date proximity now does the work.
+ */
+export const WEIGHTS = {
   /** Guardian's own relevance ranking */
-  relevance: 0.4,
-  /** Articles with images score higher */
-  media: 0.3,
-  /** Longer, more substantive articles score higher */
-  narrative: 0.2,
-  /** News and analysis tone preferred */
-  tone: 0.1,
+  relevance: 0.35,
+  /** Closeness to the chapter's focal date */
+  proximity: 0.25,
+  /** Reported news preferred over opinion, letters, galleries */
+  tone: 0.2,
+  /** Substantive length, not wire snippets nor 5,000-word essays */
+  narrative: 0.1,
+  /** Has a usable image */
+  media: 0.1,
 } as const;
+
+/** Human-readable weights, for logs and the info panel */
+export const SCORER_LABEL = "Relevance 35% · Date proximity 25% · Tone 20% · Density 10% · Media 10%";
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+export interface ScoreContext {
+  dateFrom?: string;
+  dateTo?: string;
+  focusDate?: string;
+}
 
 // ── Scoring Functions ───────────────────────────────────
 
-/**
- * Relevance score based on position in Guardian results.
- * First result = 100, decays linearly.
- */
-function scoreRelevance(index: number, total: number): number {
-  if (total <= 1) return 100;
-  return Math.round(100 * (1 - index / total));
+/** Position in Guardian results: first = 100, linear decay */
+function scoreRelevance(index: number, count: number): number {
+  if (count <= 1) return 100;
+  return Math.round(100 * (1 - index / count));
 }
 
-/**
- * Media score: articles with thumbnail get full marks.
- */
-function scoreMedia(article: GuardianResult): number {
-  const thumbnail = article.fields?.thumbnail;
-  if (thumbnail && thumbnail.length > 0) return 100;
-  return 0;
+/** 100 on the focal date, 0 at a full window-width away */
+function scoreProximity(article: GuardianResult, ctx: ScoreContext): number {
+  // Compare calendar days: anything published on the focal day scores 100
+  const published = Date.parse(article.webPublicationDate.slice(0, 10));
+  const focus = Date.parse(ctx.focusDate ?? "");
+  if (Number.isNaN(published) || Number.isNaN(focus)) return 50;
+
+  const from = Date.parse(ctx.dateFrom ?? "");
+  const to = Date.parse(ctx.dateTo ?? "");
+  const span = !Number.isNaN(from) && !Number.isNaN(to) ? Math.max(DAY_MS, to - from) : 30 * DAY_MS;
+
+  const distance = Math.abs(published - focus);
+  return Math.round(100 * Math.max(0, 1 - distance / span));
 }
 
-/**
- * Narrative density score based on word count.
- * < 500 words = penalized (likely wire copy or snippet)
- * 500-1200 = decent
- * > 1200 = long-read bonus
- */
-function scoreNarrative(article: GuardianResult): number {
-  const wc = parseWordcount(article);
-  if (wc < 300) return 10;
-  if (wc < 500) return 30;
-  if (wc < 800) return 60;
-  if (wc < 1200) return 80;
-  return 100; // long-read
-}
-
-/**
- * Tone score: news and analysis preferred over liveblog, gallery, etc.
- * Uses both `type` field and tone tags.
- */
+/** Content type + tone tags */
 function scoreTone(article: GuardianResult): number {
-  // Prefer standard articles over liveblogs, galleries, etc.
   const typeScores: Record<string, number> = {
     article: 100,
-    liveblog: 40,
+    liveblog: 70,
     interactive: 60,
+    video: 40,
+    audio: 40,
     gallery: 30,
-    video: 50,
-    audio: 50,
+    picture: 30,
   };
-  let base = typeScores[article.type] ?? 50;
+  let score = typeScores[article.type] ?? 50;
 
-  // Bonus for tone tags: news and analysis are preferred
   const toneTags = article.tags?.filter((t) => t.type === "tone") ?? [];
   for (const tag of toneTags) {
     const id = tag.id.toLowerCase();
-    if (id.includes("analysis") || id.includes("comment")) {
-      base = Math.min(100, base + 15);
-    }
-    if (id.includes("news")) {
-      base = Math.min(100, base + 10);
-    }
-    if (id.includes("letters") || id.includes("obituaries")) {
-      base = Math.max(0, base - 20);
-    }
+    if (id.endsWith("/news")) score += 5;
+    else if (id.endsWith("/analysis")) score += 5;
+    else if (id.endsWith("/comment")) score -= 15;
+    else if (id.endsWith("/editorials")) score -= 10;
+    else if (id.endsWith("/obituaries")) score -= 25;
+    else if (id.endsWith("/letters")) score -= 40;
+    else if (id.endsWith("/reviews")) score -= 40;
   }
 
-  return base;
+  return Math.max(0, Math.min(100, score));
+}
+
+/** Word count curve: peak between 700 and 1,600 words */
+function scoreNarrative(wordcount: number): number {
+  if (wordcount === 0) return 40; // unknown (liveblogs, galleries)
+  if (wordcount < 200) return 20;
+  if (wordcount < 400) return 50;
+  if (wordcount < 700) return 80;
+  if (wordcount <= 1600) return 100;
+  if (wordcount <= 3000) return 80;
+  return 60;
+}
+
+function scoreMedia(article: GuardianResult): number {
+  const hasImage = Boolean(article.fields?.thumbnail) || /<img/i.test(article.fields?.main ?? "");
+  return hasImage ? 100 : 0;
 }
 
 // ── Utilities ───────────────────────────────────────────
@@ -88,21 +104,19 @@ function parseWordcount(article: GuardianResult): number {
   const raw = article.fields?.wordcount;
   if (!raw) return 0;
   const parsed = parseInt(raw, 10);
-  return isNaN(parsed) ? 0 : parsed;
+  return Number.isNaN(parsed) ? 0 : parsed;
 }
 
 // ── Main Scorer ─────────────────────────────────────────
 
 /**
- * Score and rank an array of Guardian results.
- * Deduplicates by article ID first, then scores.
- * Returns sorted by score descending — first item is the "hero".
+ * Score and rank Guardian results for a chapter window.
+ * Deduplicates by article ID first. Returns sorted by score descending.
  */
 export function scoreArticles(
-  articles: GuardianResult[]
+  articles: GuardianResult[],
+  ctx: ScoreContext = {}
 ): ScoredArticle[] {
-  // Deduplicate by article ID — Guardian can return the same article
-  // with different rankings when keywords match multiple fields
   const seen = new Set<string>();
   const unique = articles.filter((a) => {
     if (seen.has(a.id)) return false;
@@ -111,26 +125,34 @@ export function scoreArticles(
   });
 
   const scored = unique.map((article, index) => {
-    const relevance = scoreRelevance(index, articles.length);
-    const media = scoreMedia(article);
-    const narrative = scoreNarrative(article);
-    const tone = scoreTone(article);
+    const wordcount = parseWordcount(article);
+    const breakdown = {
+      relevance: scoreRelevance(index, unique.length),
+      proximity: scoreProximity(article, ctx),
+      tone: scoreTone(article),
+      narrative: scoreNarrative(wordcount),
+      media: scoreMedia(article),
+    };
 
-    const composite = Math.round(
-      relevance * WEIGHTS.relevance +
-        media * WEIGHTS.media +
-        narrative * WEIGHTS.narrative +
-        tone * WEIGHTS.tone
-    );
+    const raw =
+      breakdown.relevance * WEIGHTS.relevance +
+      breakdown.proximity * WEIGHTS.proximity +
+      breakdown.tone * WEIGHTS.tone +
+      breakdown.narrative * WEIGHTS.narrative +
+      breakdown.media * WEIGHTS.media;
 
     return {
-      article,
-      score: composite,
-      breakdown: { relevance, media, narrative, tone },
-      wordcount: parseWordcount(article),
-      hasImage: Boolean(article.fields?.thumbnail),
+      raw,
+      result: {
+        article,
+        score: Math.round(raw),
+        breakdown,
+        wordcount,
+        hasImage: breakdown.media > 0,
+      },
     };
   });
 
-  return scored.sort((a, b) => b.score - a.score);
+  // Sort on the unrounded value so near-ties don't fall back to input order
+  return scored.sort((a, b) => b.raw - a.raw).map((s) => s.result);
 }

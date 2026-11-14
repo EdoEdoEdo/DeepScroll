@@ -4,10 +4,12 @@ import { useEffect, useRef } from "react";
 import { gsap, ScrollTrigger } from "@/app/utils/gsap";
 
 interface AIBlockProps {
+  /** Short label shown before the text, e.g. "Coverage" */
+  label?: string;
   text: string;
 }
 
-export default function AIBlock({ text }: AIBlockProps) {
+export default function AIBlock({ label = "AI", text }: AIBlockProps) {
   const ref = useRef<HTMLDivElement>(null);
   const textRef = useRef<HTMLDivElement>(null);
 
@@ -16,11 +18,19 @@ export default function AIBlock({ text }: AIBlockProps) {
     const textEl = textRef.current;
     if (!container || !textEl) return;
 
-    // Split text into word spans
-    const words = text.split(/\s+/);
-    textEl.innerHTML = words
-      .map((w) => `<span class="ai-word">${w} </span>`)
-      .join("");
+    // Split into word spans with textContent — never innerHTML,
+    // the text comes from an LLM and from user input
+    textEl.replaceChildren(
+      ...text
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((word) => {
+          const span = document.createElement("span");
+          span.className = "ai-word";
+          span.textContent = `${word} `;
+          return span;
+        })
+    );
 
     const wordEls = textEl.querySelectorAll(".ai-word");
 
@@ -47,8 +57,8 @@ export default function AIBlock({ text }: AIBlockProps) {
 
   return (
     <div ref={ref} className="chapter-ai-block">
-      <div className="ai-label">AI //</div>
-      <div ref={textRef} className="ai-text" />
+      <div className="ai-label">{label} //</div>
+      <div ref={textRef} className="ai-text" aria-label={text} />
     </div>
   );
 }

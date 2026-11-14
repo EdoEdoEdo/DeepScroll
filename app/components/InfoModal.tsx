@@ -39,16 +39,16 @@ export default function InfoModal({ open, onClose }: InfoModalProps) {
 
         <div className="info-body">
           <p>
-            DeepScroll transforms historical queries into interactive
-            5-chapter documentaries. Every article, every excerpt, every
-            headline comes from The Guardian&apos;s open archive — over two
-            million pieces of journalism dating back to 1999.
+            DeepScroll turns a historical query into a 5-act documentary
+            built from The Guardian&apos;s open archive: over two million
+            pieces of journalism dating back to 1999.
           </p>
           <p>
-            The AI acts as a director, not an author. It designs the
-            narrative arc, selects the search parameters, and scores the
-            results. But it never invents a single fact. The truth is
-            always The Guardian&apos;s.
+            The AI works in two passes. First it reads real Guardian
+            headlines to plan the arc and the searches. Then, once the
+            articles are retrieved and ranked, it writes the narration using
+            only what those articles say. Headlines, excerpts and sources are
+            Guardian copy; every act links back to the article it stands on.
           </p>
         </div>
 
@@ -59,10 +59,12 @@ export default function InfoModal({ open, onClose }: InfoModalProps) {
           (Prelude → Signal → Crisis → Response → Aftermath)<br />
           <strong>Data source</strong> — The Guardian Content API, real-time
           search and scoring<br />
-          <strong>Scorer</strong> — Relevance 40% · Media 30% · Narrative
-          density 20% · Tone 10%<br />
-          <strong>Stack</strong> — Next.js 15 · Vercel AI SDK · GSAP
-          ScrollTrigger<br />
+          <strong>Scorer</strong> — Relevance 35% · Date proximity 25% · Tone
+          20% · Narrative density 10% · Media 10%<br />
+          <strong>Models</strong> — GPT-OSS 120B on Groq · Mistral Small 4 as
+          automatic fallback<br />
+          <strong>Stack</strong> — Next.js 15 · GSAP ScrollTrigger · NDJSON
+          streaming<br />
           <strong>Design</strong> — Brutalist, data-exposed, document-first<br />
           <strong>Author</strong> —{" "}
           <a

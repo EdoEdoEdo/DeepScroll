@@ -10,38 +10,43 @@ export const ARC_TAGS = [
 
 export type ArcTag = (typeof ARC_TAGS)[number];
 
-export interface ArcChapter {
+/** Model that served an LLM step */
+export interface ModelRef {
+  id: string;
+  label: string;
+}
+
+/**
+ * Chapter plan produced by the LLM (pass 1).
+ * Search parameters only — the narration is written later,
+ * from the articles actually retrieved.
+ */
+export interface PlanChapter {
   /** Chapter index 0-4 */
   index: number;
-  /** Narrative arc tag */
   arcTag: ArcTag;
-  /** Descriptive arc label, e.g. "Lehman, 1:45 AM" */
+  /** Working label — refined by the writer in pass 2 */
   arcLabel: string;
-  /** Date range for this chapter, e.g. "2006 – 2007" */
+  /** Human-readable window, e.g. "Sep 15 – 20, 2008" */
   dateRange: string;
-  /** Guardian search keyword(s) for this chapter */
-  keyword: string;
-  /** ISO date string — search from */
+  /** ISO YYYY-MM-DD — search from */
   dateFrom: string;
-  /** ISO date string — search to */
+  /** ISO YYYY-MM-DD — search to */
   dateTo: string;
+  /** ISO YYYY-MM-DD — most significant day inside the window */
+  focusDate: string;
+  /** Guardian search keyword(s) */
+  keyword: string;
   /** Guardian section filter (optional) */
   section?: string;
-  /** Rich narrative body text (3-5 sentences) */
-  synopsis: string;
-  /** AI analysis hint — seed for the AI block */
-  aiHint: string;
 }
 
 export interface ArcPlan {
-  /** Original user query */
   query: string;
-  /** Documentary subtitle */
-  subtitle: string;
-  /** The 5 chapters */
-  chapters: ArcChapter[];
-  /** Dynamic interlude statements specific to this story (2 items) */
-  interludes: [string, string];
+  chapters: PlanChapter[];
+  /** Real Guardian headlines the plan was anchored to */
+  evidenceCount: number;
+  model: ModelRef;
 }
 
 // ── Guardian API Types ──────────────────────────────────
@@ -50,6 +55,8 @@ export interface GuardianFields {
   headline?: string;
   trailText?: string;
   body?: string;
+  /** Plain text body — trimmed server-side to the first N words */
+  bodyText?: string;
   thumbnail?: string;
   /** HTML containing higher-res <img> tag */
   main?: string;
@@ -95,18 +102,20 @@ export interface GuardianSearchResponse {
 
 // ── Scorer Types ────────────────────────────────────────
 
+export interface ScoreBreakdown {
+  relevance: number;
+  proximity: number;
+  tone: number;
+  narrative: number;
+  media: number;
+}
+
 export interface ScoredArticle {
   /** Original Guardian result */
   article: GuardianResult;
   /** Composite score 0-100 */
   score: number;
-  /** Breakdown */
-  breakdown: {
-    relevance: number;
-    media: number;
-    narrative: number;
-    tone: number;
-  };
+  breakdown: ScoreBreakdown;
   /** Parsed word count */
   wordcount: number;
   /** Whether the article has an image */
@@ -115,17 +124,31 @@ export interface ScoredArticle {
 
 // ── Chapter Render Data ─────────────────────────────────
 
+/** A real Guardian article referenced by the documentary */
+export interface SourceRef {
+  id: string;
+  title: string;
+  /** ISO publication date */
+  date: string;
+  section: string;
+  url: string;
+  byline: string;
+}
+
 export interface ChapterData {
   index: number;
   arcTag: ArcTag;
   arcLabel: string;
   dateRange: string;
-  /** Hero article headline (from Guardian) */
+  keyword: string;
+  /** Hero article headline (Guardian copy) */
   headline: string;
-  /** AI narrative body text */
+  /** Narration — written by the LLM from the retrieved articles */
   body: string;
-  /** AI corpus analysis */
-  aiAnalysis: string;
+  /** true when body/label come from the grounded writer (pass 2) */
+  grounded: boolean;
+  /** Coverage observation, based on the retrieved headlines */
+  insight: string;
   /** Guardian attribution */
   guardian: {
     excerpt: string;
@@ -141,19 +164,69 @@ export interface ChapterData {
   wordcount: number;
   /** Image URL if available */
   imageUrl: string | null;
-  /** Noise text for typographic fallback */
+  /** Guardian archive matches for this chapter's search */
+  archiveMatches: number;
+  /** Articles actually downloaded and ranked */
+  scanned: number;
+  /** Noise text for typographic texture */
   noiseText: string;
-  /** Secondary article titles for marquee */
-  secondaryTitles: string[];
+  /** Other ranked articles from the same window */
+  secondary: SourceRef[];
+}
+
+export interface DocumentaryStats {
+  /** Unique articles downloaded and ranked (evidence + chapters) */
+  scanned: number;
+  /** Sum of Guardian archive matches across chapters */
+  archiveMatches: number;
+  /** Mean hero score across chapters with a hero */
+  avgScore: number;
 }
 
 export interface DocumentaryData {
+  /** Data shape version — bump when this interface changes */
+  version: number;
   query: string;
   subtitle: string;
   chapters: ChapterData[];
-  totalArticlesAnalyzed: number;
-  avgScore: number;
-  generatedAt: string;
-  /** Dynamic interlude statements */
+  /** Dynamic interlude statements (before CH.03 and CH.05) */
   interludes: [string, string];
+  stats: DocumentaryStats;
+  /** Model that wrote the narration (or planned, if narration failed) */
+  model: ModelRef | null;
+  generatedAt: string;
 }
+
+// ── Pipeline Events (NDJSON stream) ─────────────────────
+
+export type LogStatus = "active" | "ok" | "pending" | "error";
+
+export interface LogLine {
+  time: string;
+  text: string;
+  status: LogStatus;
+}
+
+export interface ChapterStatus {
+  index: number;
+  arcTag: ArcTag;
+  keyword: string;
+  matches: number;
+  headline: string | null;
+}
+
+/** Planned chapter, sent as soon as the arc is ready (before retrieval) */
+export interface PlannedChapter {
+  index: number;
+  arcTag: ArcTag;
+  keyword: string;
+  dateRange: string;
+}
+
+export type PipelineEvent =
+  | { type: "log"; text: string; status: LogStatus }
+  | { type: "plan"; chapters: PlannedChapter[] }
+  | { type: "progress"; value: number }
+  | ({ type: "chapter" } & ChapterStatus)
+  | { type: "result"; data: DocumentaryData }
+  | { type: "error"; message: string };

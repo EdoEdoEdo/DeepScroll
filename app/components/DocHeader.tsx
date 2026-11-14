@@ -72,24 +72,28 @@ export default function DocHeader({ data }: DocHeaderProps) {
     <div ref={ref}>
       <div className="doc-header">
         <div className="doc-query-label">
-          // Documentary generated — Guardian API · AI Curated
+          // Documentary excavated from the Guardian archive · AI-narrated from real articles
         </div>
         <div className="doc-query-title">{data.query.toUpperCase()}</div>
         <div className="doc-subtitle">{data.subtitle}</div>
         <div className="doc-meta-row">
           <span>
-            <strong>5</strong> Narrative chapters
+            <strong>5</strong> Acts
           </span>
           <span>
-            <strong>{data.totalArticlesAnalyzed.toLocaleString()}</strong>{" "}
-            Articles analyzed
+            <strong>{data.stats.scanned.toLocaleString("en-GB")}</strong> Articles ranked
           </span>
           <span>
-            <strong>{data.avgScore}/100</strong> Avg. score
+            <strong>{data.stats.archiveMatches.toLocaleString("en-GB")}</strong> Archive matches
           </span>
           <span>
-            <strong>The Guardian</strong> API
+            <strong>{data.stats.avgScore}/100</strong> Avg. score
           </span>
+          {data.model && (
+            <span>
+              <strong>{data.model.label}</strong> Narration
+            </span>
+          )}
           <span>
             <strong>
               {new Date(data.generatedAt).toLocaleDateString("en-GB")}
@@ -99,7 +103,7 @@ export default function DocHeader({ data }: DocHeaderProps) {
       </div>
       <div className="scroll-indicator">
         <div className="scroll-arrow" />
-        Scroll to explore · 5 narrative chapters
+        Scroll to excavate · 5 acts
       </div>
     </div>
   );

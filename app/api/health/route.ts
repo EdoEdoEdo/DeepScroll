@@ -1,77 +1,43 @@
 import { NextResponse } from "next/server";
+import { checkProvider } from "@/app/utils/llm";
+import { checkGuardian } from "@/app/utils/guardian-client";
+
+export const dynamic = "force-dynamic";
 
 /**
  * GET /api/health
  *
- * Checks that environment variables are set and APIs are reachable.
- * Use this to verify your setup before running the full pipeline.
+ * Real checks, not just "is the key set":
+ * - Guardian: live request (+ any rate-limit headers it returns)
+ * - Groq / Mistral: key validated and configured model present in the
+ *   provider's /models list — catches retired models. Costs no tokens.
  */
 export async function GET() {
-  const checks: Record<string, { ok: boolean; detail: string }> = {};
+  const [guardian, groq, mistral] = await Promise.all([
+    checkGuardian(),
+    checkProvider("groq"),
+    checkProvider("mistral"),
+  ]);
 
-  // Check GUARDIAN_API_KEY
-  const guardianKey = process.env.GUARDIAN_API_KEY;
-  if (!guardianKey) {
-    checks.guardian = { ok: false, detail: "GUARDIAN_API_KEY not set in .env.local" };
-  } else {
-    try {
-      const res = await fetch(
-        `https://content.guardianapis.com/search?q=test&page-size=1&api-key=${guardianKey}`,
-        { next: { revalidate: 0 } }
-      );
-      if (res.ok) {
-        const data = await res.json();
-        checks.guardian = {
-          ok: true,
-          detail: `Connected — ${data.response.total.toLocaleString()} total articles accessible`,
-        };
-      } else {
-        const text = await res.text();
-        checks.guardian = { ok: false, detail: `HTTP ${res.status}: ${text.slice(0, 100)}` };
-      }
-    } catch (err) {
-      checks.guardian = {
-        ok: false,
-        detail: `Network error: ${err instanceof Error ? err.message : "unknown"}`,
-      };
-    }
-  }
-
-  // Check GROQ_API_KEY
-  const groqKey = process.env.GROQ_API_KEY;
-  if (!groqKey) {
-    checks.groq = { ok: false, detail: "GROQ_API_KEY not set (optional if Mistral configured)" };
-  } else {
-    checks.groq = {
-      ok: groqKey.startsWith("gsk_"),
-      detail: groqKey.startsWith("gsk_")
-        ? "Key format valid (gsk_...)"
-        : "Key format unexpected — Groq keys typically start with gsk_",
-    };
-  }
-
-  // Check MISTRAL_API_KEY
-  const mistralKey = process.env.MISTRAL_API_KEY;
-  if (!mistralKey) {
-    checks.mistral = { ok: false, detail: "MISTRAL_API_KEY not set (optional if Groq configured)" };
-  } else {
-    checks.mistral = { ok: true, detail: "Key configured" };
-  }
-
-  // At least one LLM must be available
-  const hasLlm = checks.groq?.ok || checks.mistral?.ok;
-  const guardianOk = checks.guardian?.ok ?? false;
-  const allOk = hasLlm && guardianOk;
+  const hasLlm = groq.ok || mistral.ok;
+  const allOk = hasLlm && guardian.ok;
 
   return NextResponse.json(
     {
       status: allOk ? "ready" : "misconfigured",
-      checks,
+      checks: {
+        guardian: { ok: guardian.ok, detail: guardian.detail },
+        groq,
+        mistral,
+      },
+      guardianRateLimit: guardian.rateLimit,
       hint: allOk
-        ? "All systems ready. Go to / to start."
+        ? groq.ok && mistral.ok
+          ? "All systems ready. Go to / to start."
+          : "Ready with a single LLM provider — configure the other one for automatic fallback."
         : !hasLlm
-          ? "At least one LLM key required (GROQ_API_KEY or MISTRAL_API_KEY)."
-          : "Fix the issues above, then restart the dev server.",
+          ? "No working LLM: check GROQ_API_KEY / MISTRAL_API_KEY and the model IDs in app/utils/llm.ts."
+          : "Fix the Guardian issue above, then restart the dev server.",
     },
     { status: allOk ? 200 : 503 }
   );

@@ -31,18 +31,42 @@ export function extractExcerpt(
 }
 
 /**
+ * First N words of a plain-text string.
+ */
+export function firstWords(text: string | undefined | null, maxWords: number): string {
+  if (!text) return "";
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  const excerpt = words.slice(0, maxWords).join(" ");
+  return words.length > maxWords ? `${excerpt}...` : excerpt;
+}
+
+/**
+ * Minimal server-side sanitizer for Guardian body HTML before it is
+ * rendered with dangerouslySetInnerHTML: drops scripts, styles, embeds,
+ * inline event handlers and javascript: URLs. Guardian markup is trusted,
+ * this is defence in depth.
+ */
+export function sanitizeHtml(html: string | undefined | null): string {
+  if (!html) return "";
+  return html
+    .replace(/<(script|style|iframe|object|embed|noscript)\b[\s\S]*?<\/\1\s*>/gi, "")
+    .replace(/<(script|style|iframe|object|embed|link|meta)\b[^>]*\/?>/gi, "")
+    .replace(/\s+on[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "")
+    .replace(/(href|src)\s*=\s*("|')\s*javascript:[^"']*\2/gi, '$1="#"');
+}
+
+/**
  * Format ISO date to human-readable "14 Mar 2007" style.
  */
 export function formatGuardianDate(iso: string): string {
-  try {
-    return new Date(iso).toLocaleDateString("en-GB", {
-      day: "numeric",
-      month: "short",
-      year: "numeric",
-    });
-  } catch {
-    return iso;
-  }
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("en-GB", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    timeZone: "UTC",
+  });
 }
 
 /**

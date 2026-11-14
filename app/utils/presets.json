@@ -1,0 +1,11 @@
+{
+  "items": [
+    { "label": "Brexit", "query": "Brexit" },
+    { "label": "COVID-19", "query": "COVID-19 Pandemic" },
+    { "label": "Ukraine", "query": "War in Ukraine" },
+    { "label": "Afghanistan", "query": "Fall of Afghanistan" },
+    { "label": "US Election 2024", "query": "US Election 2024" },
+    { "label": "George Floyd", "query": "George Floyd" },
+    { "label": "Hong Kong", "query": "Hong Kong Protests" }
+  ]
+}

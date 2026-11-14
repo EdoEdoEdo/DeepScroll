@@ -1,11 +1,10 @@
 "use client";
 
-import { useState, useCallback, useRef } from "react";
-import type { DocumentaryData } from "@/app/utils/types";
-import type { LogLine } from "@/app/components/LoadingScreen";
-import { runPipeline } from "@/app/utils/pipeline";
-import { FALLBACK_INTERLUDES } from "@/app/utils/arc";
-import { ScrollTrigger } from "@/app/utils/gsap";
+import { useState, useCallback, useEffect, useRef } from "react";
+import type { ChapterStatus, DocumentaryData, LogLine, PlannedChapter } from "@/app/utils/types";
+import { runDocumentary } from "@/app/utils/pipeline";
+import { FALLBACK_INTERLUDES, INTERLUDE_BEFORE } from "@/app/utils/arc";
+import { ScrollTrigger, refreshScroll } from "@/app/utils/gsap";
 import QueryScreen from "@/app/components/QueryScreen";
 import LoadingScreen from "@/app/components/LoadingScreen";
 import DepthIndicator from "@/app/components/DepthIndicator";
@@ -17,61 +16,119 @@ import ArticleOverlay from "@/app/components/ArticleOverlay";
 
 type AppState = "query" | "loading" | "documentary" | "error";
 
+const emptyChapters = (): Array<ChapterStatus | null> => [null, null, null, null, null];
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Keep ?q= in the address bar so every documentary is shareable */
+function setQueryParam(q: string | null) {
+  const url = new URL(window.location.href);
+  if (q) url.searchParams.set("q", q);
+  else url.searchParams.delete("q");
+  window.history.replaceState(null, "", url.toString());
+}
+
 export default function DeepScrollPage() {
   const [state, setState] = useState<AppState>("query");
   const [query, setQuery] = useState("");
+  const [modelId, setModelId] = useState<string | undefined>(undefined);
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [progress, setProgress] = useState(0);
+  const [plan, setPlan] = useState<PlannedChapter[] | null>(null);
+  const [chapterStatus, setChapterStatus] = useState<Array<ChapterStatus | null>>(emptyChapters);
   const [documentary, setDocumentary] = useState<DocumentaryData | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [overlayArticleId, setOverlayArticleId] = useState<string | null>(null);
-  const headerRef = useRef<HTMLDivElement>(null);
+  const runId = useRef(0);
+  const didInit = useRef(false);
 
-  const addLog = useCallback((log: LogLine) => {
-    setLogs((prev) => [...prev, log]);
+  const handleSubmit = useCallback(async (q: string, model?: string) => {
+    const id = ++runId.current;
+    const isCurrent = () => runId.current === id;
+
+    setQuery(q);
+    setModelId(model);
+    setState("loading");
+    setLogs([]);
+    setProgress(0);
+    setPlan(null);
+    setChapterStatus(emptyChapters());
+    setErrorMsg(null);
+    window.scrollTo(0, 0);
+
+    try {
+      const data = await runDocumentary(q, model, {
+        onLog: (line) => {
+          if (isCurrent()) setLogs((prev) => [...prev, line]);
+        },
+        onProgress: (value) => {
+          if (isCurrent()) setProgress(value);
+        },
+        onPlan: (chapters) => {
+          if (isCurrent()) setPlan(chapters);
+        },
+        onChapter: (status) => {
+          if (!isCurrent()) return;
+          setChapterStatus((prev) => {
+            const next = [...prev];
+            next[status.index] = status;
+            return next;
+          });
+        },
+      });
+
+      // Let the log finish revealing before the cut
+      await sleep(900);
+      if (!isCurrent()) return;
+
+      setDocumentary(data);
+      setState("documentary");
+      setQueryParam(q);
+    } catch (err) {
+      if (!isCurrent()) return;
+      setErrorMsg(err instanceof Error ? err.message : "Pipeline failed");
+      setState("error");
+    }
   }, []);
 
-  const handleSubmit = useCallback(
-    async (q: string, modelId?: string) => {
-      setQuery(q);
-      setState("loading");
-      setLogs([]);
-      setProgress(0);
-      setErrorMsg(null);
+  // Shared link: /?q=Brexit → generate (or load the preset) straight away
+  useEffect(() => {
+    if (didInit.current) return;
+    didInit.current = true;
+    const q = new URLSearchParams(window.location.search).get("q")?.trim();
+    if (q) void handleSubmit(q);
+  }, [handleSubmit]);
 
-      try {
-        const data = await runPipeline(q, addLog, setProgress, modelId);
-        setDocumentary(data);
-        setState("documentary");
-
-        requestAnimationFrame(() => {
-          setTimeout(() => {
-            headerRef.current?.scrollIntoView({
-              behavior: "smooth",
-              block: "start",
-            });
-          }, 100);
-        });
-      } catch (err) {
-        setErrorMsg(err instanceof Error ? err.message : "Pipeline failed");
-        setState("error");
-      }
-    },
-    [addLog]
-  );
+  // Re-measure scroll triggers once the documentary is laid out
+  useEffect(() => {
+    if (state !== "documentary") return;
+    window.scrollTo(0, 0);
+    refreshScroll(400);
+    document.fonts?.ready.then(() => refreshScroll());
+  }, [state]);
 
   const handleReset = useCallback(() => {
+    runId.current++;
     // Kill all ScrollTrigger instances from the documentary
-    ScrollTrigger.getAll().forEach((t) => t.kill());
+    ScrollTrigger.getAll().forEach((t: { kill: () => void }) => t.kill());
     setState("query");
     setQuery("");
     setLogs([]);
     setProgress(0);
+    setPlan(null);
+    setChapterStatus(emptyChapters());
     setDocumentary(null);
     setErrorMsg(null);
     setOverlayArticleId(null);
+    setQueryParam(null);
     window.scrollTo(0, 0);
   }, []);
+
+  const handleRetry = useCallback(() => {
+    if (query) void handleSubmit(query, modelId);
+  }, [query, modelId, handleSubmit]);
 
   const handleReadMore = useCallback((articleId: string) => {
     setOverlayArticleId(articleId);
@@ -90,68 +147,59 @@ export default function DeepScrollPage() {
 
       {/* Loading Screen */}
       {state === "loading" && (
-        <LoadingScreen query={query} logs={logs} progress={progress} />
+        <LoadingScreen
+          query={query}
+          logs={logs}
+          progress={progress}
+          plan={plan}
+          chapters={chapterStatus}
+        />
       )}
 
       {/* Error State */}
       {state === "error" && (
-        <section className="loading-screen">
-          <div className="loading-header">// Pipeline Error</div>
-          <div
-            className="loading-query-display"
-            style={{ fontSize: "clamp(24px, 4vw, 48px)" }}
-          >
-            {errorMsg}
+        <section className="loading-screen error-screen">
+          <div className="loading-header">// Pipeline error · {query}</div>
+          <div className="error-message">{errorMsg}</div>
+          <div className="error-actions">
+            <button className="reset-btn" onClick={handleRetry}>
+              ↻ Retry
+            </button>
+            <button className="reset-btn" onClick={handleReset}>
+              ← New query
+            </button>
           </div>
-          <button
-            className="reset-btn"
-            onClick={handleReset}
-            style={{ marginTop: 32 }}
-          >
-            ← Try again
-          </button>
         </section>
       )}
 
       {/* Documentary */}
       {state === "documentary" && documentary && (
         <>
-          <div ref={headerRef}>
-            <DocHeader data={documentary} />
-          </div>
+          <DocHeader data={documentary} />
 
           <section id="screen-doc">
             {documentary.chapters.map((ch, i) => {
-              let interludeText: string | null = null;
-              if (i === 2) {
-                interludeText = documentary.interludes?.[0] ?? FALLBACK_INTERLUDES[0];
-              } else if (i === 4) {
-                interludeText = documentary.interludes?.[1] ?? FALLBACK_INTERLUDES[1];
-              }
+              const interludeIndex = (INTERLUDE_BEFORE as readonly number[]).indexOf(i);
+              const interludeText =
+                interludeIndex >= 0
+                  ? documentary.interludes?.[interludeIndex] ?? FALLBACK_INTERLUDES[interludeIndex]
+                  : null;
 
               return (
-                <div key={i}>
-                  {interludeText && (
-                    <Interlude
-                      number={`0${i + 1}`}
-                      text={interludeText}
-                    />
-                  )}
+                <div key={`${documentary.generatedAt}-${i}`}>
+                  {interludeText && <Interlude number={`0${i + 1}`} text={interludeText} />}
                   <Chapter chapter={ch} onReadMore={handleReadMore} />
                 </div>
               );
             })}
           </section>
 
-          <Finale data={documentary} onReset={handleReset} />
+          <Finale data={documentary} onReset={handleReset} onReadMore={handleReadMore} />
         </>
       )}
 
       {/* Article Overlay */}
-      <ArticleOverlay
-        articleId={overlayArticleId}
-        onClose={handleCloseOverlay}
-      />
+      <ArticleOverlay articleId={overlayArticleId} onClose={handleCloseOverlay} />
     </>
   );
 }

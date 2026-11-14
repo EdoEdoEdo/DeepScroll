@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import dynamic from "next/dynamic";
 import InfoModal from "./InfoModal";
+import { APP_VERSION, PRESETS } from "@/app/utils/arc";
 
 const ArchStrata = dynamic(() => import("./ArchStrata"), { ssr: false });
 
@@ -12,16 +13,6 @@ interface ModelOption {
   provider: string;
   available: boolean;
 }
-
-const PRESETS = [
-  { label: "Brexit", query: "Brexit" },
-  { label: "COVID-19", query: "COVID-19 Pandemic" },
-  { label: "Ukraine", query: "War in Ukraine" },
-  { label: "Afghanistan", query: "Fall of Afghanistan" },
-  { label: "US Election 2024", query: "US Election 2024" },
-  { label: "George Floyd", query: "George Floyd" },
-  { label: "Hong Kong", query: "Hong Kong Protests" },
-];
 
 interface QueryScreenProps {
   onSubmit: (query: string, modelId: string) => void;
@@ -33,25 +24,29 @@ export default function QueryScreen({ onSubmit }: QueryScreenProps) {
   const [selectedModel, setSelectedModel] = useState("");
   const [infoOpen, setInfoOpen] = useState(false);
 
-  // Fetch available models on mount
+  // Fetch available models once on mount
   useEffect(() => {
+    let cancelled = false;
     fetch("/api/models")
       .then((res) => res.json())
-      .then((data) => {
-        const available = (data.models ?? []).filter(
-          (m: ModelOption) => m.available
-        );
+      .then((data: { models?: ModelOption[] }) => {
+        if (cancelled) return;
+        const available = (data.models ?? []).filter((m) => m.available);
         setModels(available);
-        if (available.length > 0 && !selectedModel) {
-          setSelectedModel(available[0].id);
+        if (available.length > 0) {
+          setSelectedModel((current) => current || available[0].id);
         }
       })
       .catch(() => {});
-  }, [selectedModel]);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
+  // An empty model lets the server pick the first configured one
   function handleSubmit() {
     const q = value.trim();
-    if (q && selectedModel) onSubmit(q, selectedModel);
+    if (q.length >= 2) onSubmit(q, selectedModel);
   }
 
   return (
@@ -77,7 +72,7 @@ export default function QueryScreen({ onSubmit }: QueryScreenProps) {
       <div className="query-eyebrow">
         <span className="query-eyebrow-brand">DEEPSCROLL</span>
         <span> — Digital Archive Intelligence</span>
-        <span className="query-eyebrow-ver">v1.0</span>
+        <span className="query-eyebrow-ver">{APP_VERSION}</span>
       </div>
 
       <h1 className="logo">
@@ -100,6 +95,7 @@ export default function QueryScreen({ onSubmit }: QueryScreenProps) {
             placeholder="Fall of Afghanistan..."
             autoComplete="off"
             spellCheck={false}
+            maxLength={120}
             value={value}
             onChange={(e) => setValue(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && handleSubmit()}

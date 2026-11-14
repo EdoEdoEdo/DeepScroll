@@ -11,9 +11,9 @@ The Guardian API · AI Orchestration · Scrollytelling
 
 ### The premise is simple.
 
-You type a historical query. The AI doesn't write about it — it *excavates* it. It designs a 5-act narrative arc, searches The Guardian's archive of over two million articles, scores and ranks the results, and renders them into an interactive scrollytelling documentary.
+You type a historical query. The AI doesn't write about it — it *excavates* it. It reads real Guardian headlines, designs a 5-act narrative arc, searches The Guardian's archive of over two million articles, scores and ranks the results, then writes the narration **only from the articles it found**, and renders everything into an interactive scrollytelling documentary.
 
-Every headline is real. Every excerpt is real. Every source is attributed. The AI is the director. The Guardian is the author.
+Every headline is real. Every excerpt is real. Every source is attributed. The AI is the director and the narrator. The Guardian is the author.
 
 ---
 
@@ -23,26 +23,30 @@ Every headline is real. Every excerpt is real. Every source is attributed. The A
 User query
     │
     ▼
-LLM Orchestration (Groq / Mistral)
-    │ → 5-chapter dramatic arc
-    │ → Search parameters per chapter
+Guardian evidence search ── 40 real headlines with dates
     ▼
-The Guardian Content API × 5 parallel
-    │ → 20 articles per chapter
-    │ → Section fallback if needed
+LLM pass 1 · plan (GPT-OSS 120B on Groq · Mistral Small 4 fallback)
+    │ → 5-act arc anchored to the evidence
+    │ → keyword, date window, focal date, section per act
     ▼
-Scorer Algorithm
-    │ → Relevance 40%
-    │ → Media assets 30%
-    │ → Narrative density 20%
-    │ → Tone & authority 10%
+Guardian Content API × 5 (throttled, cached)
+    │ → 20 articles per act, bodyText excerpts
+    │ → section / topic fallback if a window is empty
     ▼
-Hero enrichment (single-article fetch for body text)
+Scorer v3 → hero per act, never the same article twice
+    │ → Relevance 35% · Date proximity 25% · Tone 20%
+    │ → Narrative density 10% · Media 10%
     ▼
-5-chapter scrollytelling documentary
+LLM pass 2 · write — narration from the retrieved articles only
+    ▼
+NDJSON stream → live log → 5-act scrollytelling documentary
 ```
 
-The pipeline runs end-to-end in the browser. The LLM generates a narrative structure — not content. It decides *which moments matter*, assigns search keywords, date ranges, and Guardian sections to each chapter, then steps back. The Scorer picks the best article for each act. The rendering does the rest.
+The pipeline runs server-side in one streamed request (`POST /api/documentary`). The browser receives log, plan and per-chapter events as they happen, so the loading screen shows the real work, not an animation.
+
+Both LLM calls use JSON Schema structured output (strict, constrained decoding). Models are called through the providers' OpenAI-compatible endpoints with plain `fetch`: no SDK to break, and swapping a model is a one-line change. If a provider fails, the next one takes over automatically.
+
+Guardian calls and both LLM passes are cached through Next's data cache, so a repeated query costs nothing. The preset queries can also be pre-generated as static files (see *Presets*).
 
 ---
 
@@ -66,9 +70,11 @@ This is not a timeline. It's a dramaturgy. The difference matters: "2007, 2008, 
 
 **Brutalist, not decorative.** The interface exposes its own machinery — scorer breakdowns, word counts, section tags, article IDs. Metadata is not hidden; it's an aesthetic choice.
 
-**AI as curator, not author.** The intelligence layer organizes real journalism into narrative structure. It never fabricates. Every fact comes from The Guardian's archive with explicit source attribution.
+**AI as curator, not author.** The intelligence layer organizes real journalism into narrative structure. Its narration is written from the retrieved articles only, and every act links back to the article it stands on. When the narrator is unavailable, the Guardian's own standfirst is shown instead — never ungrounded text.
 
-**Scroll as excavation.** The scroll is not navigation — it's the act of digging through collective digital memory. The depth bar tracks your progress. The noise marquees are the discarded articles scrolling past. The interludes force you to pause.
+**Scroll as excavation.** The scroll is not navigation — it's the act of digging through collective digital memory. The depth bar tracks your progress. The strata index under each act lists the other articles from that window. The interludes force you to pause.
+
+**Each act looks like its role.** Prelude is calm. Signal mirrors the layout and a red crack opens as you scroll. Crisis is a full-bleed pinned stage. Response is dense. Aftermath is a single quiet column.
 
 ---
 
@@ -77,11 +83,11 @@ This is not a timeline. It's a dramaturgy. The difference matters: "2007, 2008, 
 | Layer | Technology |
 |-------|-----------|
 | Framework | Next.js 15 · TypeScript strict |
-| AI | Vercel AI SDK v4 · Groq (Llama 3.3 70B) · Mistral |
+| AI | Groq (GPT-OSS 120B) · Mistral (Small 4) · JSON Schema structured output · plain fetch |
 | Data | The Guardian Content API |
 | Animations | GSAP · ScrollTrigger |
 | Styling | Vanilla CSS · Brutalist design system |
-| Fonts | Bebas Neue · Barlow Condensed · IBM Plex Mono · DM Serif Display |
+| Fonts | Bebas Neue · Barlow Condensed · IBM Plex Mono · DM Serif Display (next/font) |
 | Deploy | Vercel |
 
 ---
@@ -94,44 +100,59 @@ cd deepscroll
 npm install
 ```
 
-Create `.env.local`:
+Create `.env.local` from `.env.example`:
 
 ```env
-# At least one LLM required
+# At least one LLM required — with both, the second is an automatic fallback
 GROQ_API_KEY=           # https://console.groq.com/keys
-MISTRAL_API_KEY=        # https://console.mistral.ai/api-keys (optional)
+MISTRAL_API_KEY=        # https://console.mistral.ai/api-keys
 
 # Required
-GUARDIAN_API_KEY=        # https://open-platform.theguardian.com/access/
+GUARDIAN_API_KEY=       # https://open-platform.theguardian.com/access/
+
+# Optional
+GUARDIAN_MAX_RPS=1      # Guardian requests/second (recent developer keys: 1/s, 500/day)
+RATE_LIMIT_PER_10MIN=12 # documentaries per IP per 10 min, production only
 ```
 
 ```bash
 npm run dev
 ```
 
-Visit `http://localhost:3000/api/health` to verify your keys, then `http://localhost:3000` to start.
+Visit `http://localhost:3000/api/health` to verify your keys — it checks that each configured model is actually listed by its provider, so a retired model shows up here — then `http://localhost:3000` to start.
 
 ---
 
-### Adding a new LLM provider
+### Presets
 
-1. Install the SDK: `npm install @ai-sdk/your-provider`
-2. Open `app/utils/models.ts`
-3. Add an entry to `MODEL_OPTIONS`:
+The landing presets can be pre-generated as static files, so they load instantly, cost no API quota and keep working even if every LLM provider is down:
+
+```bash
+npm run dev        # terminal 1
+npm run presets    # terminal 2 → writes public/presets/<slug>.json
+```
+
+Commit the generated files. They are versioned: when the data shape changes, stale files are ignored until you regenerate them. The preset list lives in `app/utils/presets.json`.
+
+---
+
+### Changing or adding a model
+
+Models live in `MODEL_OPTIONS` in `app/utils/llm.ts`:
 
 ```typescript
 {
-  id: "your-provider-model",
-  label: "Model Name",
-  provider: "your-provider",
-  modelId: "model-id-string",
+  id: "groq-gpt-oss-120b",        // stable ID used by the UI
+  label: "GPT-OSS 120B",
+  provider: "groq",
+  modelId: "openai/gpt-oss-120b", // provider model string
 }
 ```
 
-4. Add a `case` in `getModel()` and `getAvailableModels()` for the new provider
-5. Add `YOUR_PROVIDER_API_KEY=` to `.env.local`
+- **Swap a model:** change `modelId`. Pin dated snapshots (e.g. `mistral-small-2603`), not `-latest` aliases.
+- **New OpenAI-compatible provider:** add it to `PROVIDERS` (env key, chat URL, models URL) and to `ProviderId`.
 
-The model switch appears automatically in the UI when multiple keys are configured.
+The model switch appears automatically in the UI when more than one key is configured.
 
 ---
 
@@ -139,13 +160,14 @@ The model switch appears automatically in the UI when multiple keys are configur
 
 | Route | Purpose |
 |-------|---------|
-| `/` | Full documentary experience |
-| `/dev` | Diagnostic — test Guardian API, Scorer, and LLM independently |
-| `/api/health` | Health check — verifies API keys and connectivity |
+| `/` | Full documentary experience · `/?q=Brexit` opens a documentary directly (shareable) |
+| `/dev` | Diagnostic — health, Guardian + scorer, arc planning |
+| `/api/documentary` | POST `{ query, model? }` → NDJSON stream of pipeline events + result |
+| `/api/health` | Real checks: Guardian request, provider key + model availability |
 | `/api/models` | Available models based on configured keys |
-| `/api/guardian?q=...` | Guardian proxy with scoring |
-| `/api/guardian/article?id=...` | Single article fetch for overlay |
-| `/api/orchestrate` | POST `{ query, model }` → 5-chapter arc plan |
+| `/api/guardian?q=...` | Guardian search + scorer (diagnostic) |
+| `/api/guardian/article?id=...` | Single article for the overlay (sanitized) |
+| `/api/orchestrate` | POST `{ query, model? }` → evidence + arc plan only (diagnostic) |
 
 ---
 
@@ -154,37 +176,45 @@ The model switch appears automatically in the UI when multiple keys are configur
 ```
 app/
 ├── api/
+│   ├── documentary/route.ts      # Full pipeline, NDJSON stream
 │   ├── guardian/
-│   │   ├── route.ts              # Search proxy, scoring, section fallback
-│   │   └── article/route.ts      # Single article body fetch
-│   ├── orchestrate/route.ts      # LLM → 5-chapter arc plan
+│   │   ├── route.ts              # Search + scorer (diagnostic)
+│   │   └── article/route.ts      # Single article for the overlay
+│   ├── orchestrate/route.ts      # Evidence + arc plan (diagnostic)
 │   ├── models/route.ts           # Available models endpoint
-│   └── health/route.ts           # API key verification
+│   └── health/route.ts           # Real connectivity + model checks
 ├── components/
 │   ├── QueryScreen.tsx           # Landing — input, presets, model switch, info
-│   ├── LoadingScreen.tsx         # Terminal-style AI orchestration log
-│   ├── DocHeader.tsx             # Documentary header with metadata
-│   ├── Chapter.tsx               # Full chapter — GSAP scroll animations
+│   ├── ArchStrata.tsx            # Landing — magnetic strata bars
+│   ├── LoadingScreen.tsx         # Live log + strata filling per act
+│   ├── DocHeader.tsx             # Documentary header with real stats
+│   ├── Chapter.tsx               # One act — per-act layout and motion
+│   ├── SourceStrata.tsx          # Index of the other articles in the window
 │   ├── GuardianBox.tsx           # Source attribution with read-more
-│   ├── AIBlock.tsx               # Corpus analysis with typing effect
-│   ├── Interlude.tsx             # Dynamic red interlude cards
+│   ├── AIBlock.tsx               # Coverage analysis, word-by-word reveal
+│   ├── Interlude.tsx             # Red interlude cards
 │   ├── DepthIndicator.tsx        # Scroll bar + chapter indicator
-│   ├── Finale.tsx                # End panel with statistics
+│   ├── Finale.tsx                # Stats, primary sources, share link
 │   ├── ArticleOverlay.tsx        # Full article reading modal
 │   └── InfoModal.tsx             # Project info overlay
 ├── utils/
+│   ├── documentary.ts            # Server pipeline (evidence → plan → rank → write)
+│   ├── llm.ts                    # Groq/Mistral via fetch, structured output, fallback
+│   ├── prompts.ts                # Prompts + JSON Schemas for both passes
+│   ├── guardian-client.ts        # Throttled, cached Guardian client
+│   ├── scorer.ts                 # Article ranking v3
+│   ├── pipeline.ts               # Client runner — presets or NDJSON stream
+│   ├── rate-limit.ts             # Best-effort per-IP limiter
+│   ├── arc.ts                    # Narrative constants, presets, versions
+│   ├── presets.json              # Landing presets (shared with the script)
 │   ├── types.ts                  # All TypeScript interfaces
-│   ├── scorer.ts                 # Article ranking (R40/M30/N20/T10)
-│   ├── guardian-client.ts        # Server-side Guardian fetch
-│   ├── arc.ts                    # Narrative constants + LLM system prompt
-│   ├── pipeline.ts               # Client-side orchestration
-│   ├── models.ts                 # Multi-model provider registry
-│   ├── text.ts                   # HTML stripping, image extraction
+│   ├── text.ts                   # HTML stripping/sanitizing, image extraction
 │   └── gsap.ts                   # GSAP + ScrollTrigger registration
-├── dev/page.tsx                  # Diagnostic testing page
+├── dev/page.tsx                  # Diagnostic page
 ├── globals.css                   # Brutalist design system
-├── layout.tsx                    # Root layout
-└── page.tsx                      # Main state machine
+├── layout.tsx                    # Root layout, fonts, metadata
+└── page.tsx                      # State machine, shareable ?q=
+scripts/generate-presets.mjs      # Pre-generate presets into public/presets
 ```
 
 ---
@@ -194,13 +224,17 @@ app/
 All scroll animations use GSAP + ScrollTrigger:
 
 - **Headlines** — clip-path reveal from bottom
+- **Crisis stage** — pinned full-bleed image, scale 1.18 → 1 with the headline rising (desktop)
+- **Signal crack** — red line drawn with scroll scrub
 - **Images** — parallax ±40px on scroll
+- **Strata index** — rows staggered in
 - **Guardian Box** — slide in from left
 - **Metadata rows** — stagger at 60ms intervals
 - **AI Block** — word-by-word typing effect
 - **Interludes** — scale entrance from 0.97
 - **DocHeader** — sequenced timeline
-- **Finale stats** — staggered cell reveal
+- **Finale** — staggered stats and sources
+- **Loading** — strata bars fill as each act is retrieved
 
 ---
 
@@ -209,7 +243,7 @@ All scroll animations use GSAP + ScrollTrigger:
 - Not a news aggregator
 - Not a chatbot
 - Not a search engine
-- Not a content generator — every word of journalism comes from The Guardian
+- Not a content generator — the journalism is The Guardian's; the narration is written from it
 - Not a timeline — it's a dramaturgy
 
 ---

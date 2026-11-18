@@ -32,7 +32,6 @@ Guardian Content API × 5 (throttled, cached)
     │ → topic / keyword / section fallbacks if a window is empty
     │ → loose (OR) results kept only if the headline names the topic
     │ → live blogs only if their headline names the topic
-    │ → Aftermath searched up to today (the archive outlives the model's knowledge)
     ▼
 Scorer v3 → hero per act, never the same article twice
     │ → Relevance 50% · Tone 15% · Narrative density 15%

@@ -39,7 +39,10 @@ const LLM_CACHE_SECONDS = 60 * 60 * 24 * 30;
 export const MAX_QUERY_LENGTH = 120;
 
 /** Minimum search window per act, in days — keeps chapters from coming back empty */
-const MIN_WINDOW_DAYS = [30, 3, 3, 7, 30];
+const MIN_WINDOW_DAYS = [30, 7, 7, 7, 30];
+
+/** Event acts: coverage follows the event, so short windows extend forward */
+const FORWARD_WINDOW = [false, true, true, false, false];
 
 export type Emit = (event: PipelineEvent) => void;
 
@@ -135,10 +138,16 @@ function normalizeWindow(
   const minDays = MIN_WINDOW_DAYS[index] ?? 3;
   const span = (Date.parse(to) - Date.parse(from)) / DAY_MS;
   if (span < minDays) {
-    const half = (minDays * DAY_MS) / 2;
     const focusMs = Date.parse(focus);
-    from = toIso(focusMs - half);
-    to = toIso(Math.min(focusMs + half, Date.parse(today)));
+    if (FORWARD_WINDOW[index]) {
+      // From the day before the event to the following week, when the coverage lands
+      from = toIso(focusMs - DAY_MS);
+      to = toIso(Math.min(focusMs + (minDays - 1) * DAY_MS, Date.parse(today)));
+    } else {
+      const half = (minDays * DAY_MS) / 2;
+      from = toIso(focusMs - half);
+      to = toIso(Math.min(focusMs + half, Date.parse(today)));
+    }
   }
 
   return { dateFrom: from, dateTo: to, focusDate: focus };
@@ -284,7 +293,9 @@ async function harvestChapter(
   input: PlanChapter,
   query: string,
   usedHeroIds: Set<string>,
-  emit: Emit
+  emit: Emit,
+  /** Re-centring may only land between the neighbouring chapters */
+  bounds: { from: string; to: string }
 ): Promise<ChapterHarvest> {
   let plan = input;
   const terms = topicTerms(query);
@@ -305,19 +316,32 @@ async function harvestChapter(
     // 2. Empty window: the AI may have the date wrong — find when the Guardian covered it.
     //    Not for the Prelude: it is *before* the event, the topic may not exist yet.
     if (res.results.length === 0 && plan.index > 0) {
-      const undated = await searchGuardian({ q: anchored, orderBy: "relevance", pageSize: 10 });
-      const top = undated.results[0];
-      if (top) {
-        const span = Math.max(Date.parse(plan.dateTo) - Date.parse(plan.dateFrom), (MIN_WINDOW_DAYS[plan.index] ?? 3) * DAY_MS);
-        const focusMs = Date.parse(top.webPublicationDate.slice(0, 10));
+      const undated = await searchGuardian({ q: anchored, orderBy: "relevance", pageSize: 20 });
+      // Closest coverage to the AI's date, within the neighbouring chapters —
+      // never the "most relevant" article from years later
+      const aiFocus = Date.parse(plan.focusDate);
+      const candidates = undated.results
+        .map((r) => ({ r, day: r.webPublicationDate.slice(0, 10) }))
+        .filter(({ day }) => day >= bounds.from && day <= bounds.to)
+        .sort((a, b) => Math.abs(Date.parse(a.day) - aiFocus) - Math.abs(Date.parse(b.day) - aiFocus));
+      const best = candidates[0];
+      if (best) {
+        const span = Math.max(
+          Date.parse(plan.dateTo) - Date.parse(plan.dateFrom),
+          (MIN_WINDOW_DAYS[plan.index] ?? 7) * DAY_MS
+        );
+        const focusMs = Date.parse(best.day);
         const today = Date.parse(todayIso());
+        const forward = FORWARD_WINDOW[plan.index];
+        const dateFrom = toIso(forward ? focusMs - DAY_MS : focusMs - span / 2);
+        const dateTo = toIso(Math.min(forward ? focusMs + span - DAY_MS : focusMs + span / 2, today));
         plan = {
           ...plan,
-          focusDate: toIso(focusMs),
-          dateFrom: toIso(focusMs - span / 2),
-          dateTo: toIso(Math.min(focusMs + span / 2, today)),
+          focusDate: best.day,
+          dateFrom,
+          dateTo,
+          dateRange: `${formatGuardianDate(dateFrom)} – ${formatGuardianDate(dateTo)}`,
         };
-        plan = { ...plan, dateRange: `${formatGuardianDate(plan.dateFrom)} – ${formatGuardianDate(plan.dateTo)}` };
         log(emit, `→ no coverage in the planned window: re-centred on ${plan.dateFrom} → ${plan.dateTo}`, "pending");
         res = await searchGuardian({ q: anchored, ...currentWindow() });
       }
@@ -478,7 +502,10 @@ export async function buildDocumentary(
 
     let harvest: ChapterHarvest;
     try {
-      harvest = await harvestChapter(ch, query, usedHeroIds, emit);
+      harvest = await harvestChapter(ch, query, usedHeroIds, emit, {
+        from: plan.chapters[ch.index - 1]?.dateFrom ?? "1999-01-01",
+        to: plan.chapters[ch.index + 1]?.dateTo ?? todayIso(),
+      });
     } catch (err) {
       log(emit, `→ retrieval failed: ${truncate(message(err), 80)}`, "error");
       harvest = { plan: ch, total: 0, scored: [], hero: null, secondary: [] };

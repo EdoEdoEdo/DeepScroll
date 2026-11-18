@@ -28,15 +28,14 @@ LLM · arc (GPT-OSS 120B on Groq · Mistral Small 4 fallback)
     │ → voiceover per act, subtitle, 2 interludes
     ▼
 Guardian Content API × 5 (throttled, cached)
-    │ → 20 articles per act, bodyText excerpts
-    │ → topic / keyword / section fallbacks if a window is empty
-    │ → loose (OR) results kept only if the headline names the topic
-    │ → live blogs only if their headline names the topic
+    │ → AI keyword in the AI window, as in v1: 20 articles per act
+    │ → no result in the section → all sections → the query itself
     ▼
 Scorer v3 → hero per act, never the same article twice
     │ → Relevance 50% · Tone 15% · Narrative density 15%
-    │ → Date proximity 10% · Media 10% · +15 if the headline names the topic
-    │ → +5 per word of the chapter's moment in the headline (max +10)
+    │ → Date proximity 10% · Media 10%
+    │ → ranking hints, never filters: +15 if the headline names the topic,
+    │   −12 soft sections (music, lifestyle…), −12 off-topic live blogs
     ▼
 LLM · fact-check (best effort)
     │ → voiceover, labels and interludes reread next to the articles found

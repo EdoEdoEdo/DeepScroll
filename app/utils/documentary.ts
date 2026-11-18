@@ -4,7 +4,8 @@
  *   query
  *     → LLM call 1: 5-act arc (search windows + narration + interludes),
  *       from the model's own knowledge — same approach as v1
- *     → Guardian search per act (throttled, cached)
+ *     → Guardian search per act, as in v1: AI keyword in the AI window
+ *       (throttled, cached; 1–3 calls per act)
  *     → scorer v3 → hero per act, never the same article twice
  *     → LLM call 2 (best effort, ~3k tokens): the narration is reread next
  *       to the articles found and corrected where they contradict it
@@ -26,7 +27,7 @@ import type {
 } from "./types";
 import { ARC_STRUCTURE, DOC_VERSION, FALLBACK_INTERLUDES } from "./arc";
 import { searchGuardian } from "./guardian-client";
-import { namesTopic, scoreArticles, SCORER_LABEL } from "./scorer";
+import { scoreArticles, SCORER_LABEL } from "./scorer";
 import { generateJson, HttpError, LlmError, toModelRef } from "./llm";
 import {
   CHECK_SCHEMA,
@@ -259,8 +260,6 @@ export async function planArc(
 
 // ── Step 2: retrieve + rank per chapter ─────────────────
 
-// ── Topic anchoring ─────────────────────────────────────
-
 const STOPWORDS = new Set([
   "the", "and", "for", "from", "with", "into", "over", "after", "before", "during",
   "fall", "rise", "end", "war", "crisis", "story", "history", "of", "in", "on", "a", "an",
@@ -268,8 +267,9 @@ const STOPWORDS = new Set([
 
 /**
  * The 1–2 most distinctive words of the query ("Fall of Afghanistan" →
- * ["afghanistan"], "George Floyd" → ["george", "floyd"]). Used to keep every
- * chapter search on topic, and to boost articles that name the topic.
+ * ["afghanistan"], "George Floyd" → ["george", "floyd"]). The scorer gives
+ * a bonus to articles whose headline names them — a ranking hint only:
+ * nothing is ever discarded for missing them ("Brexit" did not exist in 2014).
  */
 export function topicTerms(query: string): string[] {
   const words = query
@@ -281,50 +281,6 @@ export function topicTerms(query: string): string[] {
   return unique.sort((a, b) => b.length - a.length).slice(0, 2);
 }
 
-/** Words never worth requiring in a Guardian AND query */
-const QUERY_FILLERS = new Set(["of", "the", "and", "in", "on", "a", "an", "to", "for", "at", "by"]);
-
-/** Guardian query requiring the topic AND every keyword word */
-function anchoredQuery(keyword: string, terms: string[]): string {
-  const words = keyword
-    .split(/\s+/)
-    .filter((w) => w && !terms.includes(w.toLowerCase()) && !QUERY_FILLERS.has(w.toLowerCase()));
-  const parts = [...terms, ...words].map((w) => (/[\s-]/.test(w) ? `"${w}"` : w));
-  return parts.join(" AND ");
-}
-
-/** Keyword words worth matching (lower case, no fillers, no topic words) */
-function keywordWordsOf(keyword: string, terms: string[]): string[] {
-  return [
-    ...new Set(
-      keyword
-        .toLowerCase()
-        .split(/\s+/)
-        .filter((w) => w.length >= 3 && !QUERY_FILLERS.has(w) && !STOPWORDS.has(w) && !terms.includes(w))
-    ),
-  ];
-}
-
-/**
- * The 2 most distinctive keyword words — the longest, as in topicTerms
- * ("wikileaks julian assange launch" → ["wikileaks", "assange"]): first
- * names and generic verbs are short, so they never carry a search alone.
- */
-function distinctiveWords(words: string[]): string[] {
-  return [...words].sort((a, b) => b.length - a.length).slice(0, 2);
-}
-
-/**
- * Topic-only query for the Prelude: the exact phrase when the query reads
- * that way ("george floyd" — not "george AND floyd", which also finds
- * Pink Floyd pieces mentioning a George), else every topic word.
- */
-function topicOnlyQuery(query: string, terms: string[], index: number): string {
-  const phrase = terms.join(" ");
-  if (index === 0 && terms.length > 1 && query.toLowerCase().includes(phrase)) return `"${phrase}"`;
-  return anchoredQuery("", terms);
-}
-
 interface ChapterHarvest {
   plan: PlanChapter;
   total: number;
@@ -333,171 +289,55 @@ interface ChapterHarvest {
   secondary: ScoredArticle[];
 }
 
+/**
+ * Same search as v1: the AI keyword inside the AI window, ranked by the
+ * Guardian (articles containing more of the keyword come first). At most
+ * three calls, usually one — the chapter is silent only if the archive is.
+ */
 async function harvestChapter(
-  input: PlanChapter,
+  plan: PlanChapter,
   query: string,
   usedHeroIds: Set<string>,
-  emit: Emit,
-  /** Re-centring may only land between the neighbouring chapters */
-  bounds: { from: string; to: string }
+  emit: Emit
 ): Promise<ChapterHarvest> {
-  let plan = input;
-  const terms = topicTerms(query);
-  const currentWindow = () => ({
+  const window = {
     fromDate: plan.dateFrom,
     toDate: plan.dateTo,
     orderBy: "relevance" as const,
     pageSize: 20,
     withBody: true,
-  });
+  };
 
-  // 1. Topic AND keyword, inside the window chosen by the AI
-  let res = { results: [] as Awaited<ReturnType<typeof searchGuardian>>["results"], total: 0 };
-  if (terms.length > 0) {
-    const anchored = anchoredQuery(plan.keyword, terms);
-    res = await searchGuardian({ q: anchored, ...currentWindow() });
+  // 1. Keyword in its section
+  let res = await searchGuardian({ q: plan.keyword, ...window, section: plan.section });
 
-    // 2. Empty window: the AI may have the date wrong — find when the Guardian covered it.
-    //    Not for the Prelude: it is *before* the event, the topic may not exist yet.
-    if (res.results.length === 0 && plan.index > 0) {
-      const undated = await searchGuardian({ q: anchored, orderBy: "relevance", pageSize: 20 });
-      // Closest coverage to the AI's date, within the neighbouring chapters —
-      // never the "most relevant" article from years later
-      const aiFocus = Date.parse(plan.focusDate);
-      const candidates = undated.results
-        .map((r) => ({ r, day: r.webPublicationDate.slice(0, 10) }))
-        .filter(({ day }) => day >= bounds.from && day <= bounds.to)
-        .sort((a, b) => Math.abs(Date.parse(a.day) - aiFocus) - Math.abs(Date.parse(b.day) - aiFocus));
-      const best = candidates[0];
-      if (best) {
-        const span = Math.max(
-          Date.parse(plan.dateTo) - Date.parse(plan.dateFrom),
-          (MIN_WINDOW_DAYS[plan.index] ?? 7) * DAY_MS
-        );
-        const focusMs = Date.parse(best.day);
-        const todayMs = Date.parse(todayIso());
-        const forward = FORWARD_WINDOW[plan.index];
-        const dateFrom = toIso(forward ? focusMs - DAY_MS : focusMs - span / 2);
-        const dateTo = toIso(Math.min(forward ? focusMs + span - DAY_MS : focusMs + span / 2, todayMs));
-        plan = {
-          ...plan,
-          focusDate: best.day,
-          dateFrom,
-          dateTo,
-          dateRange: `${formatGuardianDate(dateFrom)} – ${formatGuardianDate(dateTo)}`,
-        };
-        log(emit, `→ no coverage in the planned window: re-centred on ${plan.dateFrom} → ${plan.dateTo}`, "pending");
-        res = await searchGuardian({ q: anchored, ...currentWindow() });
-      }
-    }
-  }
-
-  const searchWindow = currentWindow();
-
-  // 3. Topic only, inside the window (e.g. "george AND floyd" in 2021–2023).
-  //    Prelude too: the subject often exists before its big moment (WikiLeaks
-  //    in 2007); when it doesn't, the search is simply empty and we move on.
-  if (res.results.length === 0 && terms.length > 0) {
-    log(emit, `→ widening to every article on "${terms.join(" ")}" in the window`, "pending");
-    res = await searchGuardian({ q: topicOnlyQuery(query, terms, plan.index), ...searchWindow });
-  }
-
-  // 4. Keyword with ALL its words required (Guardian treats plain words as OR)
-  const strictKeyword = anchoredQuery(plan.keyword, []);
-  if (res.results.length === 0 && strictKeyword.includes(" AND ")) {
-    res = await searchGuardian({ q: strictKeyword, ...searchWindow, section: plan.section });
-    if (res.results.length === 0 && plan.section) {
-      res = await searchGuardian({ q: strictKeyword, ...searchWindow });
-    }
-  }
-
-  // 4b. Only the 2 most distinctive keyword words, both required — before
-  //     the loose search, where a lone first name ("julian") is enough
-  const keywordWords = keywordWordsOf(plan.keyword, terms);
-  const distinctive = distinctiveWords(keywordWordsOf(plan.keyword, []));
-  if (res.results.length === 0 && distinctive.length === 2) {
-    const relaxed = anchoredQuery(distinctive.join(" "), []);
-    if (relaxed !== strictKeyword) {
-      log(emit, `→ relaxing the search to "${distinctive.join(" ")}"`, "pending");
-      res = await searchGuardian({ q: relaxed, ...searchWindow });
-    }
-  }
-
-  // 5. Loose fallbacks: plain keyword (with section, then without), then the topic.
-  //    Guardian reads plain words as OR: what comes back is filtered below.
-  const foundBeforeLoose = res.results.length > 0;
-  if (res.results.length === 0) {
-    res = await searchGuardian({ q: plan.keyword, ...searchWindow, section: plan.section });
-  }
-
+  // 2. Keyword in every section
   if (res.results.length === 0 && plan.section) {
     log(emit, `→ nothing in section "${plan.section}", widening to all sections`, "pending");
-    res = await searchGuardian({ q: plan.keyword, ...searchWindow });
-  }
-  if (res.results.length === 0 && plan.keyword.toLowerCase() !== query.toLowerCase()) {
-    log(emit, `→ retrying with "${query}" in the same window`, "pending");
-    res = await searchGuardian({ q: query, ...searchWindow });
+    res = await searchGuardian({ q: plan.keyword, ...window });
   }
 
-  // Prelude: the topic may have no name yet → reward the keyword's own words
-  // instead, as long as the most distinctive one is among them
-  // ("assange" — never "julian" + "launch" alone)
+  // 3. The query itself
+  if (res.results.length === 0 && plan.keyword.toLowerCase() !== query.toLowerCase()) {
+    log(emit, `→ retrying with "${query}" in the same window`, "pending");
+    res = await searchGuardian({ q: query, ...window });
+  }
+
   const scored = scoreArticles(res.results, {
     dateFrom: plan.dateFrom,
     dateTo: plan.dateTo,
     focusDate: plan.focusDate,
-    topicTerms: terms,
-    // This chapter's own moment ("video", "asylum"): between two articles on
-    // the topic, the one about this moment leads
-    momentTerms: keywordWords,
-    ...(plan.index === 0
-      ? {
-          keywordTerms: {
-            terms: keywordWords,
-            min: Math.min(2, keywordWords.length),
-            anyOf: distinctiveWords(keywordWords).slice(0, 1),
-          },
-        }
-      : {}),
+    topicTerms: topicTerms(query),
   });
 
-  // Loose results count only if they name the topic ("Introduction",
-  // "Recipe for activism"): a wrong hero is worse than an honest silence
-  let ranked = scored;
-  let total = res.total;
-  if (!foundBeforeLoose && scored.length > 0 && terms.length > 0) {
-    ranked = scored.filter((s) => namesTopic(s.article, terms));
-    total = ranked.length;
-    if (ranked.length < scored.length) {
-      log(
-        emit,
-        `→ loose search: kept ${ranked.length} of ${scored.length} articles naming "${terms.join(" ")}"`,
-        "pending"
-      );
-    }
-  }
-
-  // Live blogs cover the whole day's news: one leads or enters the index
-  // only if its headline names the topic ("WikiLeaks US embassy cables: live
-  // updates" yes, an Australian politics blog that mentions Assange no)
-  if (terms.length > 0) {
-    const before = ranked.length;
-    ranked = ranked.filter(
-      (s) => s.article.type !== "liveblog" || terms.every((t) => s.article.webTitle.toLowerCase().includes(t))
-    );
-    if (ranked.length < before) {
-      log(emit, `→ ${before - ranked.length} live blog${before - ranked.length === 1 ? "" : "s"} set aside: not about "${terms.join(" ")}"`, "pending");
-    }
-  }
-
   // The same article never leads two chapters
-  const hero = ranked.find((s) => !usedHeroIds.has(s.article.id)) ?? null;
+  const hero = scored.find((s) => !usedHeroIds.has(s.article.id)) ?? null;
   if (hero) usedHeroIds.add(hero.article.id);
-  const secondary = ranked
+  const secondary = scored
     .filter((s) => s !== hero && !usedHeroIds.has(s.article.id))
     .slice(0, 8);
 
-  return { plan, total, scored: ranked, hero, secondary };
+  return { plan, total: res.total, scored, hero, secondary };
 }
 
 // ── Step 3: fact-check (best effort) ────────────────────
@@ -783,10 +623,7 @@ export async function buildDocumentary(
 
     let harvest: ChapterHarvest;
     try {
-      harvest = await harvestChapter(ch, query, usedHeroIds, emit, {
-        from: plan.chapters[ch.index - 1]?.dateFrom ?? "1999-01-01",
-        to: plan.chapters[ch.index + 1]?.dateTo ?? todayIso(),
-      });
+      harvest = await harvestChapter(ch, query, usedHeroIds, emit);
     } catch (err) {
       log(emit, `→ retrieval failed: ${truncate(message(err), 80)}`, "error");
       harvest = { plan: ch, total: 0, scored: [], hero: null, secondary: [] };

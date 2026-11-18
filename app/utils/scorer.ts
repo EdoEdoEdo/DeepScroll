@@ -31,18 +31,12 @@ export interface ScoreContext {
   focusDate?: string;
   /** Words of the documentary topic (lower case): articles naming it get a bonus */
   topicTerms?: string[];
-  /**
-   * Alternative when the topic has no name yet (Prelude): bonus if at least
-   * `min` of these keyword words appear in the headline or standfirst, and
-   * at least one of them is in `anyOf` (the most distinctive) when given
-   */
-  keywordTerms?: { terms: string[]; min: number; anyOf?: string[] };
-  /**
-   * Words of this chapter's moment (its keyword minus the topic, e.g.
-   * "video", "asylum"): each one in the headline or standfirst adds points
-   */
-  momentTerms?: string[];
 }
+
+/*
+ * Ranking hints only — they reorder the Guardian results, they never
+ * remove one: a chapter is silent only when the archive is.
+ */
 
 /** Sections that rarely make a good primary source for a news documentary */
 const SOFT_SECTIONS = new Set([
@@ -55,43 +49,24 @@ const SOFT_SECTION_PENALTY = 12;
 /** Points added when the headline or standfirst names the topic */
 const TOPIC_BONUS = 15;
 
-/** Per moment word in the headline or standfirst, up to the cap (≈4 positions in 20) */
-const MOMENT_BONUS_PER_WORD = 5;
-const MOMENT_BONUS_MAX = 10;
+/** Live blogs cover a whole day of news: unless their headline names the topic */
+const LIVEBLOG_PENALTY = 12;
 
 function headlineText(article: GuardianResult): string {
   return `${article.webTitle} ${article.fields?.trailText ?? ""} ${article.fields?.standfirst ?? ""}`.toLowerCase();
 }
 
-/** Headline, trail or standfirst contain every one of these words (lower case) */
-export function namesTopic(article: GuardianResult, terms: string[]): boolean {
+/** Headline, trail or standfirst contain every topic word */
+function mentionsTopic(article: GuardianResult, terms: string[]): boolean {
   const text = headlineText(article);
   return terms.length > 0 && terms.every((t) => text.includes(t));
 }
 
-function mentionsTopic(article: GuardianResult, ctx: ScoreContext): boolean {
-  const text = headlineText(article);
-  const topicHit = namesTopic(article, ctx.topicTerms ?? []);
-  const kw = ctx.keywordTerms;
-  const matched = kw ? kw.terms.filter((t) => text.includes(t)) : [];
-  const keywordHit =
-    Boolean(kw && kw.terms.length > 0) &&
-    matched.length >= kw!.min &&
-    (!kw!.anyOf || kw!.anyOf.length === 0 || matched.some((t) => kw!.anyOf!.includes(t)));
-  return topicHit || keywordHit;
-}
-
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-/** Moment words matched at the start of a word ("video" → "videos", never "ban" → "urban") */
-function momentBonus(article: GuardianResult, ctx: ScoreContext): number {
-  const terms = ctx.momentTerms ?? [];
-  if (terms.length === 0) return 0;
-  const text = headlineText(article);
-  const hits = terms.filter((t) => new RegExp("(^|[^a-z0-9])" + escapeRegExp(t)).test(text)).length;
-  return Math.min(MOMENT_BONUS_MAX, hits * MOMENT_BONUS_PER_WORD);
+/** A live blog whose own headline is about something else */
+function isOffTopicLiveblog(article: GuardianResult, terms: string[]): boolean {
+  if (article.type !== "liveblog" || terms.length === 0) return false;
+  const title = article.webTitle.toLowerCase();
+  return !terms.every((t) => title.includes(t));
 }
 
 // ── Scoring Functions ───────────────────────────────────
@@ -187,6 +162,7 @@ export function scoreArticles(
     return true;
   });
 
+  const terms = ctx.topicTerms ?? [];
   const scored = unique.map((article, index) => {
     const wordcount = parseWordcount(article);
     const breakdown = {
@@ -198,8 +174,8 @@ export function scoreArticles(
     };
 
     const raw =
-      (mentionsTopic(article, ctx) ? TOPIC_BONUS : 0) +
-      momentBonus(article, ctx) -
+      (mentionsTopic(article, terms) ? TOPIC_BONUS : 0) -
+      (isOffTopicLiveblog(article, terms) ? LIVEBLOG_PENALTY : 0) -
       (SOFT_SECTIONS.has(article.sectionId) ? SOFT_SECTION_PENALTY : 0) +
       breakdown.relevance * WEIGHTS.relevance +
       breakdown.proximity * WEIGHTS.proximity +

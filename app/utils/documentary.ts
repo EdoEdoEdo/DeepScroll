@@ -260,9 +260,14 @@ export function topicTerms(query: string): string[] {
   return unique.sort((a, b) => b.length - a.length).slice(0, 2);
 }
 
+/** Words never worth requiring in a Guardian AND query */
+const QUERY_FILLERS = new Set(["of", "the", "and", "in", "on", "a", "an", "to", "for", "at", "by"]);
+
 /** Guardian query requiring the topic AND every keyword word */
 function anchoredQuery(keyword: string, terms: string[]): string {
-  const words = keyword.split(/\s+/).filter((w) => w && !terms.includes(w.toLowerCase()));
+  const words = keyword
+    .split(/\s+/)
+    .filter((w) => w && !terms.includes(w.toLowerCase()) && !QUERY_FILLERS.has(w.toLowerCase()));
   const parts = [...terms, ...words].map((w) => (/[\s-]/.test(w) ? `"${w}"` : w));
   return parts.join(" AND ");
 }
@@ -319,8 +324,25 @@ async function harvestChapter(
     }
   }
 
-  // 3. Fallbacks: plain keyword (with section, then without), then the topic
   const searchWindow = currentWindow();
+
+  // 3. Topic only, inside the window (e.g. "george AND floyd" in 2021–2023).
+  //    Not for the Prelude: before the event the topic usually has no name yet.
+  if (res.results.length === 0 && terms.length > 0 && plan.index > 0) {
+    log(emit, `→ widening to every article on "${terms.join(" ")}" in the window`, "pending");
+    res = await searchGuardian({ q: anchoredQuery("", terms), ...searchWindow });
+  }
+
+  // 4. Keyword with ALL its words required (Guardian treats plain words as OR)
+  const strictKeyword = anchoredQuery(plan.keyword, []);
+  if (res.results.length === 0 && strictKeyword.includes(" AND ")) {
+    res = await searchGuardian({ q: strictKeyword, ...searchWindow, section: plan.section });
+    if (res.results.length === 0 && plan.section) {
+      res = await searchGuardian({ q: strictKeyword, ...searchWindow });
+    }
+  }
+
+  // 5. Loose fallbacks: plain keyword (with section, then without), then the topic
   if (res.results.length === 0) {
     res = await searchGuardian({ q: plan.keyword, ...searchWindow, section: plan.section });
   }

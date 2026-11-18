@@ -12,7 +12,7 @@
  */
 
 /** Bump when the prompt changes — part of the LLM cache key */
-export const PROMPT_VERSION = "p4";
+export const PROMPT_VERSION = "p5";
 
 /** Accepted Guardian section ids (anything else is dropped in code) */
 export const GUARDIAN_SECTIONS = [
@@ -48,7 +48,7 @@ The 5 chapters follow a fixed structure:
 For each chapter, provide:
 - arcLabel: A SHORT punchy headline (3-6 words max) UNIQUE to this specific historical event. Do NOT use generic labels like "Systemic blindness" or "The breaking point" — instead reference actual people, places, moments, or numbers. Examples: "Lehman, 1:45 AM" for the 2008 crisis, "Forty-one patients in Wuhan" for COVID, "The 52% nobody expected" for Brexit, "Nine minutes and twenty-nine seconds" for George Floyd. Each label must be different and specific.
 - dateRange: Human-readable date range (e.g. "2006 – 2007", "September 15, 2008")
-- keyword: 2-4 search keywords for The Guardian API that ALWAYS include the main subject's name (e.g. "lehman brothers bankruptcy", "covid lockdown", "wikileaks afghan war logs")
+- keyword: 2-4 search keywords for The Guardian API that ALWAYS include the main subject's name (e.g. "lehman brothers bankruptcy", "covid lockdown", "wikileaks afghan war logs"). For the PRELUDE, when the subject had no name yet, use the concrete people, places and institutions of that context instead (e.g. "minneapolis police complaints", "subprime mortgages"). Avoid abstract words like "legacy", "reckoning", "reform" alone.
 - dateFrom: ISO date for search start (YYYY-MM-DD)
 - dateTo: ISO date for search end (YYYY-MM-DD)
 - focusDate: ISO date of the single most significant day inside that window (YYYY-MM-DD)

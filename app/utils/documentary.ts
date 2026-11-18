@@ -447,6 +447,9 @@ async function harvestChapter(
     dateTo: plan.dateTo,
     focusDate: plan.focusDate,
     topicTerms: terms,
+    // This chapter's own moment ("video", "asylum"): between two articles on
+    // the topic, the one about this moment leads
+    momentTerms: keywordWords,
     ...(plan.index === 0
       ? {
           keywordTerms: {

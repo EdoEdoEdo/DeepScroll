@@ -35,6 +35,7 @@ Guardian Content API × 5 (throttled, cached)
 Scorer v3 → hero per act, never the same article twice
     │ → Relevance 50% · Tone 15% · Narrative density 15%
     │ → Date proximity 10% · Media 10% · +15 if the headline names the topic
+    │ → +5 per word of the chapter's moment in the headline (max +10)
     ▼
 LLM · fact-check (best effort)
     │ → voiceover, labels and interludes reread next to the articles found

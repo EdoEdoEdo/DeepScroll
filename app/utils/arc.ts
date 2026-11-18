@@ -5,7 +5,7 @@ import presetsJson from "./presets.json";
 export const DOC_VERSION = 3;
 
 /** Version shown in the UI */
-export const APP_VERSION = "v2.1.6";
+export const APP_VERSION = "v2.1.7";
 
 /**
  * Narrative arc structure — fixed 5-chapter dramaturgy.

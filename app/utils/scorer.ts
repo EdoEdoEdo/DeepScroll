@@ -37,6 +37,11 @@ export interface ScoreContext {
    * at least one of them is in `anyOf` (the most distinctive) when given
    */
   keywordTerms?: { terms: string[]; min: number; anyOf?: string[] };
+  /**
+   * Words of this chapter's moment (its keyword minus the topic, e.g.
+   * "video", "asylum"): each one in the headline or standfirst adds points
+   */
+  momentTerms?: string[];
 }
 
 /** Sections that rarely make a good primary source for a news documentary */
@@ -49,6 +54,10 @@ const SOFT_SECTION_PENALTY = 12;
 
 /** Points added when the headline or standfirst names the topic */
 const TOPIC_BONUS = 15;
+
+/** Per moment word in the headline or standfirst, up to the cap (≈4 positions in 20) */
+const MOMENT_BONUS_PER_WORD = 5;
+const MOMENT_BONUS_MAX = 10;
 
 function headlineText(article: GuardianResult): string {
   return `${article.webTitle} ${article.fields?.trailText ?? ""} ${article.fields?.standfirst ?? ""}`.toLowerCase();
@@ -70,6 +79,19 @@ function mentionsTopic(article: GuardianResult, ctx: ScoreContext): boolean {
     matched.length >= kw!.min &&
     (!kw!.anyOf || kw!.anyOf.length === 0 || matched.some((t) => kw!.anyOf!.includes(t)));
   return topicHit || keywordHit;
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Moment words matched at the start of a word ("video" → "videos", never "ban" → "urban") */
+function momentBonus(article: GuardianResult, ctx: ScoreContext): number {
+  const terms = ctx.momentTerms ?? [];
+  if (terms.length === 0) return 0;
+  const text = headlineText(article);
+  const hits = terms.filter((t) => new RegExp("(^|[^a-z0-9])" + escapeRegExp(t)).test(text)).length;
+  return Math.min(MOMENT_BONUS_MAX, hits * MOMENT_BONUS_PER_WORD);
 }
 
 // ── Scoring Functions ───────────────────────────────────
@@ -176,7 +198,8 @@ export function scoreArticles(
     };
 
     const raw =
-      (mentionsTopic(article, ctx) ? TOPIC_BONUS : 0) -
+      (mentionsTopic(article, ctx) ? TOPIC_BONUS : 0) +
+      momentBonus(article, ctx) -
       (SOFT_SECTIONS.has(article.sectionId) ? SOFT_SECTION_PENALTY : 0) +
       breakdown.relevance * WEIGHTS.relevance +
       breakdown.proximity * WEIGHTS.proximity +

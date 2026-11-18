@@ -15,10 +15,10 @@
  */
 
 /** Bump when the prompt changes — part of the LLM cache key */
-export const PROMPT_VERSION = "p8";
+export const PROMPT_VERSION = "p9";
 
 /** Bump when the fact-check prompt changes — part of its cache key */
-export const CHECK_VERSION = "c2";
+export const CHECK_VERSION = "c3";
 
 /** Accepted Guardian section ids (anything else is dropped in code) */
 export const GUARDIAN_SECTIONS = [
@@ -49,10 +49,10 @@ The 5 chapters follow a fixed structure:
 2. SIGNAL — The first visible crack. A specific event that marks the beginning in retrospect: the first moment that made the news, not a founding date or a launch nobody reported at the time.
 3. CRISIS — The breaking point. Maximum coverage density, maximum impact.
 4. RESPONSE — How the system responds. Bailouts, political decisions, mobilization.
-5. AFTERMATH — The bill comes due. Long-term impact, structural changes.
+5. AFTERMATH — The bill comes due. Long-term impact, structural changes. Its window must reach the latest major turning point of the story up to today (a verdict, a release, a new law), never stop midway.
 
 For each chapter, provide:
-- arcLabel: A SHORT punchy headline (3-6 words max) UNIQUE to this specific historical event. Do NOT use generic labels like "Systemic blindness" or "The breaking point" — instead reference actual people, places, moments, or numbers. Examples: "Lehman, 1:45 AM" for the 2008 crisis, "Forty-one patients in Wuhan" for COVID, "The 52% nobody expected" for Brexit, "Nine minutes and twenty-nine seconds" for George Floyd. Each label must be different and specific.
+- arcLabel: A SHORT punchy headline (3-6 words max) UNIQUE to this specific historical event. Do NOT use generic labels like "Systemic blindness" or "The breaking point" — instead reference actual people, places, moments, or numbers. Examples: "The night Lehman fell" for the 2008 crisis, "Forty-one patients in Wuhan" for COVID, "The 52% nobody expected" for Brexit, "Nine minutes and twenty-nine seconds" for George Floyd. Each label must be different and specific. Use only real names, places and terms tied to that moment: never invent nicknames, slogans or place names.
 - dateRange: Human-readable date range (e.g. "2006 – 2007", "September 15, 2008")
 - keyword: 2-4 search keywords for The Guardian API that ALWAYS include the main subject's name (e.g. "lehman brothers bankruptcy", "covid lockdown", "wikileaks afghan war logs"). For the PRELUDE, when the subject had no name yet, use the concrete people, places and institutions of that context instead (e.g. "minneapolis police complaints", "subprime mortgages"). Avoid abstract words like "legacy", "reckoning", "reform" alone.
 - dateFrom: ISO date for search start (YYYY-MM-DD)
@@ -145,6 +145,7 @@ Make every text accurate while changing as little as possible:
 - Do not add any other fact that is not in the articles. Never mention the Guardian, the articles or "sources" in the texts.
 - Keep the documentary voice, English, and the length: synopsis 60-80 words, aiHint 1-2 sentences.
 - arcLabel: keep it unless it states something false or uncertain; then write a new 3-6 word label in the same spirit.
+- Remove invented nicknames, slogans, place names or terms (e.g. a name for an event that nobody used at the time) from labels and texts.
 - aiHint describes what the coverage of that period reveals: keep it consistent with the headlines listed for that chapter.
 - interludes: 2 statements under 15 words with NO numbers, figures or dates; keep them when they already comply and are true.
 

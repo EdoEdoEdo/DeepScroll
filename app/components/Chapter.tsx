@@ -221,10 +221,10 @@ export default function Chapter({ chapter, onReadMore }: ChapterProps) {
           archive is silent here.
         </p>
       )}
-      {hasHero && (
+      {ch.body && (
         <div className="chapter-provenance">
-          {ch.grounded
-            ? "Narration · AI-written from the Guardian articles of this window"
+          {ch.aiNarration
+            ? "Narration · AI voiceover · the sources below are real Guardian articles"
             : "Guardian standfirst · AI narration unavailable"}
         </div>
       )}

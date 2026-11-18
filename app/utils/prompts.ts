@@ -1,21 +1,21 @@
 /**
- * Prompts and JSON Schemas for the two LLM passes — server only.
+ * Prompt and JSON Schema for the single LLM call — server only.
  *
- *   Pass 1 (plan)  — reads real Guardian headlines, returns search
- *                    parameters for 5 acts. No narration.
- *   Pass 2 (write) — reads the articles actually retrieved, writes the
- *                    narration using only facts found in them.
+ * Same approach as v1: one call, the model receives only the query and
+ * returns the whole arc (search parameters, narration, interludes) from
+ * its own knowledge. Cheap enough for the free tiers (~2k tokens).
  *
- * Schemas are strict-mode compatible (Groq/Mistral): every property is
- * required and every object sets additionalProperties: false. Counts
- * (5 chapters, 2 interludes) are validated in code, not in the schema.
+ * The schema is strict-mode compatible (every property required,
+ * additionalProperties: false) and deliberately has no enums: on Groq,
+ * gpt-oss sometimes produces values outside an enum and the request
+ * fails with HTTP 400. Values are validated in code instead.
  */
 
-/** Bump when prompts change — part of the LLM cache key */
-export const PROMPT_VERSION = "p2";
+/** Bump when the prompt changes — part of the LLM cache key */
+export const PROMPT_VERSION = "p3";
 
+/** Accepted Guardian section ids (anything else is dropped in code) */
 export const GUARDIAN_SECTIONS = [
-  "",
   "world",
   "uk-news",
   "us-news",
@@ -34,127 +34,59 @@ export const GUARDIAN_SECTIONS = [
   "sport",
 ] as const;
 
-// ── Pass 1: plan ────────────────────────────────────────
+export const ORCHESTRATE_SYSTEM = `You are a documentary director. Given a historical query, you generate a 5-chapter narrative arc sourced from The Guardian newspaper archive.
 
-export const PLAN_SYSTEM = `You are the research director of a documentary series built entirely from The Guardian's archive (1999 to today).
-Given a topic, you design the search plan for a fixed 5-act arc. You do NOT write narration: you choose the moments, and the search parameters that will retrieve real articles about them.
+Your role is dramaturgical: you organize real events into a compelling narrative. You do NOT invent facts — you identify the key moments and frame them as a documentary story arc.
 
-The 5 acts, in chronological order:
-1. PRELUDE: the context before. The situation, the warnings, the normality that preceded the event.
-2. SIGNAL: the first visible crack. A specific early event that, in hindsight, marks the beginning.
-3. CRISIS: the breaking point. The moment of maximum impact and maximum coverage.
-4. RESPONSE: how institutions and people reacted.
-5. AFTERMATH: the consequences. What changed, what didn't.
+The 5 chapters follow a fixed structure:
+1. PRELUDE — Context before the event. Systemic blindness, ignored warnings, false normalcy.
+2. SIGNAL — The first visible crack. A specific event that marks the beginning in retrospect.
+3. CRISIS — The breaking point. Maximum coverage density, maximum impact.
+4. RESPONSE — How the system responds. Bailouts, political decisions, mobilization.
+5. AFTERMATH — The bill comes due. Long-term impact, structural changes.
 
-You receive ARCHIVE EVIDENCE: real Guardian headlines with their publication dates. Anchor your dates to it. If the topic is more recent than your training data, trust the evidence, not your memory.
+For each chapter, provide:
+- arcLabel: A SHORT punchy headline (3-6 words max) UNIQUE to this specific historical event. Do NOT use generic labels like "Systemic blindness" or "The breaking point" — instead reference actual people, places, moments, or numbers. Examples: "Lehman, 1:45 AM" for the 2008 crisis, "Forty-one patients in Wuhan" for COVID, "The 52% nobody expected" for Brexit, "Nine minutes and twenty-nine seconds" for George Floyd. Each label must be different and specific.
+- dateRange: Human-readable date range (e.g. "2006 – 2007", "September 15, 2008")
+- keyword: 2-4 search keywords for The Guardian API (e.g. "lehman brothers bankruptcy", "covid lockdown")
+- dateFrom: ISO date for search start (YYYY-MM-DD)
+- dateTo: ISO date for search end (YYYY-MM-DD)
+- focusDate: ISO date of the single most significant day inside that window (YYYY-MM-DD)
+- section: Guardian section filter (use "business", "world", "politics", "uk-news", "us-news", "science", "environment", "society", or empty string if broad)
+- synopsis: A RICH narrative paragraph (3-5 sentences, ~60-80 words). Write it like a documentary voiceover: dramatic, factual, cinematic. Include specific numbers, dates, names where historically accurate. This text will be displayed as the chapter body.
+- aiHint: A brief analytical observation (1-2 sentences) about what the Guardian coverage of this period would reveal — e.g. linguistic patterns, coverage density, editorial blind spots, semantic shifts.
 
-For each act return:
-- arcLabel: working title, 2-5 words, neutral. No numbers you cannot see in the evidence.
-- dateRange: human readable, e.g. "Jun 2016", "Sep 15 – 20, 2008", "2006 – 2007".
-- dateFrom, dateTo: ISO dates (YYYY-MM-DD), the search window. Chronological and non-overlapping across acts. Tight for single events (days to weeks), wider for context acts (months).
-- focusDate: ISO date inside the window: the single most significant day.
-- keyword: 2-4 search terms for the Guardian search engine. Concrete nouns: people, places, institutions. No years, no dates, no quotes, no boolean operators.
-- section: a Guardian section id from the allowed list, or "" when the topic spans sections. When unsure, use "".
+Also provide:
+- subtitle: A documentary subtitle, poetic and evocative (e.g. "The collapse that reshaped global capitalism")
+- interludes: An array of exactly 2 short, powerful statements specific to THIS story. These appear as dramatic red cards between chapters. They should hit hard — use specific numbers, facts, or provocative framings from the event. Examples: "639 billion dollars. One night. One bankruptcy." or "The world stopped in 72 hours." or "52% voted. 100% were affected." Each must be under 15 words.
 
-Respond with JSON only.`;
+CRITICAL RULES:
+- EVERYTHING must be in English
+- Date ranges must be historically accurate, chronological and non-overlapping
+- The arc covers the WHOLE story, from its origins to its consequences — not only its latest developments
+- Windows must be wide enough to contain articles: at least a few days for single events, months for context chapters
+- The Guardian archive starts in 1999; no window may end after today's date
+- The arc is DRAMATURGICAL: "blindness → signal → collapse → response → aftermath"
+- synopsis must be substantive (60-80 words each), not one-line summaries
+- keyword should be specific enough to find relevant Guardian articles for that exact moment
+- interludes must be specific to this event, never generic
 
-export function buildPlanPrompt(query: string, evidence: string[], today: string): string {
-  const evidenceBlock =
-    evidence.length > 0
-      ? `ARCHIVE EVIDENCE (${evidence.length} relevant Guardian articles, oldest first — date | section | headline):\n${evidence.join("\n")}`
-      : "ARCHIVE EVIDENCE: none found. Use your own knowledge and keep the windows wide.";
+Respond with valid JSON only. No markdown fences, no preamble text.`;
 
-  return `TOPIC: "${query}"
-TODAY: ${today} (no window may end after this date)
+export function buildOrchestratePrompt(query: string, today: string): string {
+  return `Generate a 5-chapter narrative arc for the following historical query:
 
-${evidenceBlock}
+"${query}"
 
-Return {"chapters": [...]} with exactly 5 acts, in order: Prelude, Signal, Crisis, Response, Aftermath.`;
+Today is ${today}.
+
+Respond with a JSON object containing:
+- "subtitle": string (English, poetic)
+- "interludes": array of 2 short punchy statements specific to this event (English, under 15 words each)
+- "chapters": array of 5 objects, each with: arcLabel, dateRange, keyword, dateFrom, dateTo, focusDate, section, synopsis (60-80 words, dramatic English), aiHint (1-2 sentences about Guardian coverage patterns)`;
 }
 
-export const PLAN_SCHEMA: Record<string, unknown> = {
-  type: "object",
-  properties: {
-    chapters: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          arcLabel: { type: "string" },
-          dateRange: { type: "string" },
-          dateFrom: { type: "string" },
-          dateTo: { type: "string" },
-          focusDate: { type: "string" },
-          keyword: { type: "string" },
-          section: { type: "string", enum: [...GUARDIAN_SECTIONS] },
-        },
-        required: ["arcLabel", "dateRange", "dateFrom", "dateTo", "focusDate", "keyword", "section"],
-        additionalProperties: false,
-      },
-    },
-  },
-  required: ["chapters"],
-  additionalProperties: false,
-};
-
-// ── Pass 2: write ───────────────────────────────────────
-
-export const WRITE_SYSTEM = `You are the editor of a documentary built entirely from The Guardian's archive. For each of 5 acts you receive the real articles retrieved for it. You write the narration on top of that material.
-
-HARD RULES
-- Every factual detail you write (names, numbers, dates, places, quotes) must appear in the material of that act. Do not use outside knowledge for facts. If the material has no number, write no number.
-- If an act's material is thin, write less. If an act has NO material, return "" for its synopsis and insight, and an arcLabel like "Silence in the archive".
-- English only. Plain text, no markdown.
-
-FIELDS
-- subtitle: one evocative line for the whole documentary, max 12 words, no facts beyond the material.
-- interludes: exactly 2 statements, max 14 words each, shown as red cards: the first before act 3, the second before act 5. Punchy, built from facts in the material of act 3 and act 5 respectively.
-- chapters: exactly 5, in order. For each:
-  - arcLabel: 2-6 words specific to this act's material (a person, a place, a moment). Never generic, like "The breaking point".
-  - synopsis: 50-80 words of documentary voiceover, present tense. Start from the HERO article, then use the other headlines.
-  - insight: 1-2 sentences on how the Guardian covered this window, based only on the headlines listed: what they foreground, recurring words, whose voice appears. No statistics beyond those provided.
-
-Respond with JSON only.`;
-
-export interface WriteMaterial {
-  arcTag: string;
-  dateRange: string;
-  keyword: string;
-  matches: number;
-  hero: {
-    date: string;
-    section: string;
-    byline: string;
-    headline: string;
-    standfirst: string;
-    excerpt: string;
-  } | null;
-  others: Array<{ date: string; title: string }>;
-}
-
-export function buildWritePrompt(query: string, acts: WriteMaterial[]): string {
-  const blocks = acts.map((act, i) => {
-    const head = `ACT ${i + 1}: ${act.arcTag.toUpperCase()} · ${act.dateRange} · search "${act.keyword}" · ${act.matches} archive matches`;
-    if (!act.hero) return `${head}\n(no material)`;
-
-    const hero = act.hero;
-    const lines = [
-      head,
-      `HERO (${hero.date}, ${hero.section}${hero.byline ? `, by ${hero.byline}` : ""}): ${hero.headline}`,
-    ];
-    if (hero.standfirst) lines.push(`Standfirst: ${hero.standfirst}`);
-    if (hero.excerpt) lines.push(`Excerpt: ${hero.excerpt}`);
-    if (act.others.length > 0) {
-      lines.push("OTHER HEADLINES:");
-      for (const o of act.others) lines.push(`- ${o.date} · ${o.title}`);
-    }
-    return lines.join("\n");
-  });
-
-  return `TOPIC: "${query}"\n\n${blocks.join("\n\n")}\n\nReturn {"subtitle", "interludes", "chapters"} with exactly 2 interludes and 5 chapters.`;
-}
-
-export const WRITE_SCHEMA: Record<string, unknown> = {
+export const ORCHESTRATE_SCHEMA: Record<string, unknown> = {
   type: "object",
   properties: {
     subtitle: { type: "string" },
@@ -165,10 +97,26 @@ export const WRITE_SCHEMA: Record<string, unknown> = {
         type: "object",
         properties: {
           arcLabel: { type: "string" },
+          dateRange: { type: "string" },
+          keyword: { type: "string" },
+          dateFrom: { type: "string" },
+          dateTo: { type: "string" },
+          focusDate: { type: "string" },
+          section: { type: "string" },
           synopsis: { type: "string" },
-          insight: { type: "string" },
+          aiHint: { type: "string" },
         },
-        required: ["arcLabel", "synopsis", "insight"],
+        required: [
+          "arcLabel",
+          "dateRange",
+          "keyword",
+          "dateFrom",
+          "dateTo",
+          "focusDate",
+          "section",
+          "synopsis",
+          "aiHint",
+        ],
         additionalProperties: false,
       },
     },

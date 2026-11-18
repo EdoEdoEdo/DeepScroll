@@ -44,11 +44,11 @@ export default function InfoModal({ open, onClose }: InfoModalProps) {
             pieces of journalism dating back to 1999.
           </p>
           <p>
-            The AI works in two passes. First it reads real Guardian
-            headlines to plan the arc and the searches. Then, once the
-            articles are retrieved and ranked, it writes the narration using
-            only what those articles say. Headlines, excerpts and sources are
-            Guardian copy; every act links back to the article it stands on.
+            The AI acts as director: it designs the arc, the search for each
+            act and the voiceover. Then the Guardian archive is searched and
+            ranked, and the best article becomes the primary source of each
+            act. Headlines, excerpts and sources are real Guardian copy; the
+            narration is the AI&apos;s, and every act links back to its source.
           </p>
         </div>
 

@@ -17,15 +17,14 @@ export interface ModelRef {
 }
 
 /**
- * Chapter plan produced by the LLM (pass 1).
- * Search parameters only — the narration is written later,
- * from the articles actually retrieved.
+ * Chapter plan produced by the LLM in a single call:
+ * search parameters + narration, from the model's own knowledge.
  */
 export interface PlanChapter {
   /** Chapter index 0-4 */
   index: number;
   arcTag: ArcTag;
-  /** Working label — refined by the writer in pass 2 */
+  /** Short, event-specific label */
   arcLabel: string;
   /** Human-readable window, e.g. "Sep 15 – 20, 2008" */
   dateRange: string;
@@ -39,13 +38,17 @@ export interface PlanChapter {
   keyword: string;
   /** Guardian section filter (optional) */
   section?: string;
+  /** Narration paragraph (AI) */
+  synopsis: string;
+  /** Observation about the Guardian coverage (AI) */
+  aiHint: string;
 }
 
 export interface ArcPlan {
   query: string;
+  subtitle: string;
+  interludes: [string, string];
   chapters: PlanChapter[];
-  /** Real Guardian headlines the plan was anchored to */
-  evidenceCount: number;
   model: ModelRef;
 }
 
@@ -143,11 +146,11 @@ export interface ChapterData {
   keyword: string;
   /** Hero article headline (Guardian copy) */
   headline: string;
-  /** Narration — written by the LLM from the retrieved articles */
+  /** Narration — AI voiceover, or the Guardian standfirst as fallback */
   body: string;
-  /** true when body/label come from the grounded writer (pass 2) */
-  grounded: boolean;
-  /** Coverage observation, based on the retrieved headlines */
+  /** true when body is the AI narration, false when it is Guardian copy */
+  aiNarration: boolean;
+  /** AI observation about the coverage of this window */
   insight: string;
   /** Guardian attribution */
   guardian: {
@@ -175,7 +178,7 @@ export interface ChapterData {
 }
 
 export interface DocumentaryStats {
-  /** Unique articles downloaded and ranked (evidence + chapters) */
+  /** Unique articles downloaded and ranked */
   scanned: number;
   /** Sum of Guardian archive matches across chapters */
   archiveMatches: number;
@@ -192,7 +195,7 @@ export interface DocumentaryData {
   /** Dynamic interlude statements (before CH.03 and CH.05) */
   interludes: [string, string];
   stats: DocumentaryStats;
-  /** Model that wrote the narration (or planned, if narration failed) */
+  /** Model that planned and narrated the documentary */
   model: ModelRef | null;
   generatedAt: string;
 }
@@ -229,4 +232,4 @@ export type PipelineEvent =
   | { type: "progress"; value: number }
   | ({ type: "chapter" } & ChapterStatus)
   | { type: "result"; data: DocumentaryData }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string; detail?: string };

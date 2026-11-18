@@ -2,17 +2,16 @@
  * Documentary pipeline — server only.
  *
  *   query
- *     → Guardian evidence search (real headlines + dates)
- *     → LLM pass 1: 5-act search plan anchored to the evidence
- *     → Guardian search per act (throttled) → scorer v3 → hero, no repeats
- *     → LLM pass 2: narration written only from the retrieved articles
+ *     → one LLM call: 5-act arc (search windows + narration + interludes),
+ *       from the model's own knowledge — same approach as v1, ~2k tokens
+ *     → Guardian search per act (throttled, cached)
+ *     → scorer v3 → hero per act, never the same article twice
  *     → DocumentaryData
  *
  * Progress is reported through `emit` (streamed to the browser as NDJSON).
- * Guardian calls and both LLM passes are cached, so a repeated query is
- * served from cache in a second or two.
+ * The LLM call and the Guardian searches are cached, so a repeated query
+ * costs no tokens and no API calls.
  */
-import { createHash } from "crypto";
 import { unstable_cache } from "next/cache";
 import type {
   ArcPlan,
@@ -26,27 +25,27 @@ import type {
 import { ARC_STRUCTURE, DOC_VERSION, FALLBACK_INTERLUDES } from "./arc";
 import { searchGuardian } from "./guardian-client";
 import { scoreArticles, SCORER_LABEL } from "./scorer";
-import { generateJson, toModelRef, type ModelOption } from "./llm";
+import { generateJson, HttpError, LlmError, toModelRef } from "./llm";
 import {
   GUARDIAN_SECTIONS,
-  PLAN_SCHEMA,
-  PLAN_SYSTEM,
+  ORCHESTRATE_SCHEMA,
+  ORCHESTRATE_SYSTEM,
   PROMPT_VERSION,
-  WRITE_SCHEMA,
-  WRITE_SYSTEM,
-  buildPlanPrompt,
-  buildWritePrompt,
-  type WriteMaterial,
+  buildOrchestratePrompt,
 } from "./prompts";
 import { extractBestImage, firstWords, formatGuardianDate, stripHtml, truncate } from "./text";
 
 const LLM_CACHE_SECONDS = 60 * 60 * 24 * 30;
 export const MAX_QUERY_LENGTH = 120;
 
+/** Minimum search window per act, in days — keeps chapters from coming back empty */
+const MIN_WINDOW_DAYS = [30, 3, 3, 7, 30];
+
 export type Emit = (event: PipelineEvent) => void;
 
+/** Pipeline failure with a readable message and the technical detail apart */
 export class PipelineError extends Error {
-  constructor(message: string) {
+  constructor(message: string, public detail?: string) {
     super(message);
     this.name = "PipelineError";
   }
@@ -54,12 +53,10 @@ export class PipelineError extends Error {
 
 // ── Helpers ─────────────────────────────────────────────
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
-}
-
-function hash(value: unknown): string {
-  return createHash("sha1").update(JSON.stringify(value)).digest("hex").slice(0, 16);
 }
 
 function str(value: unknown): string {
@@ -72,12 +69,12 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-function isoDay(value: string): string {
-  return value.slice(0, 10);
-}
-
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
+}
+
+function toIso(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 10);
 }
 
 /** "2016-06-23" (also accepts full ISO timestamps) or null */
@@ -85,10 +82,6 @@ function isoOrNull(value: unknown): string | null {
   const s = str(value).slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
   return Number.isNaN(Date.parse(s)) ? null : s;
-}
-
-function midpoint(from: string, to: string): string {
-  return new Date((Date.parse(from) + Date.parse(to)) / 2).toISOString().slice(0, 10);
 }
 
 function log(emit: Emit, text: string, status: "active" | "ok" | "pending" | "error" = "active") {
@@ -107,49 +100,64 @@ export function normalizeQuery(raw: unknown): string | null {
   return q;
 }
 
-// ── Step 1: evidence ────────────────────────────────────
+// ── Step 1: arc (single LLM call) ───────────────────────
 
-export interface Evidence {
-  /** "YYYY-MM-DD | section | headline", oldest first */
-  lines: string[];
-  total: number;
-  ids: string[];
+/**
+ * Clean dates: swap reversed windows, clamp to today, widen windows that
+ * are too narrow to contain articles, keep the focal day inside.
+ */
+function normalizeWindow(
+  index: number,
+  rawFrom: unknown,
+  rawTo: unknown,
+  rawFocus: unknown,
+  today: string
+): { dateFrom: string; dateTo: string; focusDate: string } {
+  let from = isoOrNull(rawFrom);
+  let to = isoOrNull(rawTo);
+  if (!from || !to) {
+    // Salvage the chapter from its focal day (widened below) rather than discard the answer
+    const focusOnly = isoOrNull(rawFocus);
+    if (!focusOnly) throw new Error(`Chapter ${index + 1}: invalid dates`);
+    from = from ?? focusOnly;
+    to = to ?? focusOnly;
+  }
+  if (from > to) [from, to] = [to, from];
+  if (to > today) to = today;
+  if (from > to) from = to;
+
+  let focus = isoOrNull(rawFocus);
+  if (!focus || focus < from || focus > to) {
+    focus = toIso((Date.parse(from) + Date.parse(to)) / 2);
+  }
+
+  // Widen around the focal day if the window is narrower than the minimum
+  const minDays = MIN_WINDOW_DAYS[index] ?? 3;
+  const span = (Date.parse(to) - Date.parse(from)) / DAY_MS;
+  if (span < minDays) {
+    const half = (minDays * DAY_MS) / 2;
+    const focusMs = Date.parse(focus);
+    from = toIso(focusMs - half);
+    to = toIso(Math.min(focusMs + half, Date.parse(today)));
+  }
+
+  return { dateFrom: from, dateTo: to, focusDate: focus };
 }
 
-export async function getEvidence(query: string): Promise<Evidence> {
-  const { results, total } = await searchGuardian({ q: query, pageSize: 40, orderBy: "relevance" });
-  const sorted = [...results].sort((a, b) =>
-    a.webPublicationDate.localeCompare(b.webPublicationDate)
-  );
-  return {
-    lines: sorted.map(
-      (r) => `${isoDay(r.webPublicationDate)} | ${r.sectionId} | ${truncate(r.webTitle, 140)}`
-    ),
-    total,
-    ids: results.map((r) => r.id),
-  };
-}
-
-// ── Step 2: plan (LLM pass 1) ───────────────────────────
-
-function validatePlan(raw: unknown, query: string, today: string): PlanChapter[] {
-  const list = asRecord(raw)?.chapters;
+function validateArc(
+  raw: unknown,
+  query: string,
+  today: string
+): Omit<ArcPlan, "query" | "model"> {
+  const obj = asRecord(raw);
+  const list = obj?.chapters;
   if (!Array.isArray(list) || list.length < 5) {
     throw new Error(`Expected 5 chapters, got ${Array.isArray(list) ? list.length : 0}`);
   }
 
-  return list.slice(0, 5).map((item, i): PlanChapter => {
+  const chapters = list.slice(0, 5).map((item, i): PlanChapter => {
     const ch = asRecord(item) ?? {};
-
-    let from = isoOrNull(ch.dateFrom);
-    let to = isoOrNull(ch.dateTo);
-    if (!from || !to) throw new Error(`Chapter ${i + 1}: invalid dates`);
-    if (from > to) [from, to] = [to, from];
-    if (to > today) to = today;
-    if (from > to) from = to;
-
-    let focus = isoOrNull(ch.focusDate);
-    if (!focus || focus < from || focus > to) focus = midpoint(from, to);
+    const win = normalizeWindow(i, ch.dateFrom, ch.dateTo, ch.focusDate, today);
 
     const keyword =
       str(ch.keyword)
@@ -158,59 +166,77 @@ function validatePlan(raw: unknown, query: string, today: string): PlanChapter[]
         .replace(/\s+/g, " ")
         .trim() || query;
 
-    const sectionRaw = str(ch.section);
-    const section =
-      sectionRaw && (GUARDIAN_SECTIONS as readonly string[]).includes(sectionRaw)
-        ? sectionRaw
-        : undefined;
+    const sectionRaw = str(ch.section).toLowerCase();
+    const section = (GUARDIAN_SECTIONS as readonly string[]).includes(sectionRaw)
+      ? sectionRaw
+      : undefined;
 
     return {
       index: i,
       arcTag: ARC_STRUCTURE[i].tag,
       arcLabel: str(ch.arcLabel) || ARC_STRUCTURE[i].role,
-      dateRange: str(ch.dateRange) || `${from} – ${to}`,
-      dateFrom: from,
-      dateTo: to,
-      focusDate: focus,
+      dateRange: str(ch.dateRange) || `${win.dateFrom} – ${win.dateTo}`,
+      ...win,
       keyword,
       section,
+      synopsis: str(ch.synopsis),
+      aiHint: str(ch.aiHint),
     };
   });
+
+  const interludes = Array.isArray(obj?.interludes)
+    ? (obj.interludes as unknown[]).map(str).filter((s) => s.length > 0)
+    : [];
+
+  return {
+    subtitle: str(obj?.subtitle),
+    interludes: [interludes[0] ?? FALLBACK_INTERLUDES[0], interludes[1] ?? FALLBACK_INTERLUDES[1]],
+    chapters,
+  };
+}
+
+/** Readable log line for a failed attempt */
+function attemptMessage(label: string, err: Error): string {
+  if (err instanceof HttpError && err.status === 429) {
+    return `⚠ ${label}: free-tier limit reached, waiting and retrying...`;
+  }
+  if (err instanceof HttpError && err.status === 400) {
+    return `⚠ ${label}: response did not match the schema, retrying in JSON mode`;
+  }
+  return `⚠ ${label}: ${truncate(err.message, 90)}`;
 }
 
 export async function planArc(
   query: string,
-  evidence: Evidence,
   preferredModel?: string,
   emit?: Emit
 ): Promise<ArcPlan> {
   const today = todayIso();
 
   const run = () =>
-    generateJson<PlanChapter[]>({
-      name: "documentary_plan",
-      system: PLAN_SYSTEM,
-      prompt: buildPlanPrompt(query, evidence.lines, today),
-      schema: PLAN_SCHEMA,
-      validate: (raw) => validatePlan(raw, query, today),
-      maxTokens: 3000,
-      temperature: 0.5,
+    generateJson({
+      name: "documentary_arc",
+      system: ORCHESTRATE_SYSTEM,
+      prompt: buildOrchestratePrompt(query, today),
+      schema: ORCHESTRATE_SCHEMA,
+      validate: (raw) => validateArc(raw, query, today),
+      maxTokens: 4000,
+      temperature: 0.7,
       preferredModel,
-      onAttemptError: (model, err) =>
-        emit && log(emit, `⚠ ${model.label}: ${truncate(err.message, 90)}`, "error"),
+      onAttemptError: (model, err) => emit && log(emit, attemptMessage(model.label, err), "error"),
     });
 
   const cached = unstable_cache(
     run,
-    ["llm-plan", PROMPT_VERSION, query.toLowerCase(), preferredModel ?? "auto", hash(evidence.lines)],
+    ["llm-arc", PROMPT_VERSION, query.toLowerCase(), preferredModel ?? "auto"],
     { revalidate: LLM_CACHE_SECONDS }
   );
 
   const { data, model } = await cached();
-  return { query, chapters: data, evidenceCount: evidence.lines.length, model: toModelRef(model) };
+  return { query, ...data, model: toModelRef(model) };
 }
 
-// ── Step 3: retrieve + rank per chapter ─────────────────
+// ── Step 2: retrieve + rank per chapter ─────────────────
 
 interface ChapterHarvest {
   plan: PlanChapter;
@@ -261,103 +287,7 @@ async function harvestChapter(
   return { plan, total: res.total, scored, hero, secondary };
 }
 
-// ── Step 4: narration (LLM pass 2) ──────────────────────
-
-interface WrittenChapter {
-  arcLabel: string;
-  synopsis: string;
-  insight: string;
-}
-
-interface WriteResult {
-  subtitle: string;
-  interludes: [string, string];
-  chapters: WrittenChapter[];
-}
-
-function buildMaterial(harvests: ChapterHarvest[]): WriteMaterial[] {
-  return harvests.map((h) => {
-    const hero = h.hero?.article ?? null;
-    const f = hero?.fields ?? {};
-    return {
-      arcTag: h.plan.arcTag,
-      dateRange: h.plan.dateRange,
-      keyword: h.plan.keyword,
-      matches: h.total,
-      hero: hero
-        ? {
-            date: isoDay(hero.webPublicationDate),
-            section: hero.sectionName,
-            byline: f.byline ?? "",
-            headline: hero.webTitle,
-            standfirst: stripHtml(f.standfirst),
-            excerpt: firstWords(f.bodyText || stripHtml(f.trailText), 220),
-          }
-        : null,
-      others: h.secondary.slice(0, 7).map((s) => ({
-        date: isoDay(s.article.webPublicationDate),
-        title: s.article.webTitle,
-      })),
-    };
-  });
-}
-
-function validateWrite(raw: unknown, material: WriteMaterial[]): WriteResult {
-  const obj = asRecord(raw);
-  if (!obj) throw new Error("Narration is not a JSON object");
-
-  const list = Array.isArray(obj.chapters) ? obj.chapters : [];
-  if (list.length < 5) throw new Error(`Expected 5 chapters, got ${list.length}`);
-
-  const chapters = list.slice(0, 5).map((item, i): WrittenChapter => {
-    const ch = asRecord(item) ?? {};
-    const hasMaterial = Boolean(material[i]?.hero);
-    return {
-      arcLabel: str(ch.arcLabel),
-      // Never keep narration for a chapter without sources
-      synopsis: hasMaterial ? str(ch.synopsis) : "",
-      insight: hasMaterial ? str(ch.insight) : "",
-    };
-  });
-
-  const interludes = Array.isArray(obj.interludes)
-    ? obj.interludes.map(str).filter((s) => s.length > 0)
-    : [];
-
-  return {
-    subtitle: str(obj.subtitle),
-    interludes: [interludes[0] ?? FALLBACK_INTERLUDES[0], interludes[1] ?? FALLBACK_INTERLUDES[1]],
-    chapters,
-  };
-}
-
-async function writeNarration(
-  query: string,
-  material: WriteMaterial[],
-  preferredModel: string | undefined,
-  emit: Emit
-): Promise<{ data: WriteResult; model: ModelOption }> {
-  const run = () =>
-    generateJson<WriteResult>({
-      name: "documentary_narration",
-      system: WRITE_SYSTEM,
-      prompt: buildWritePrompt(query, material),
-      schema: WRITE_SCHEMA,
-      validate: (raw) => validateWrite(raw, material),
-      maxTokens: 6000,
-      temperature: 0.7,
-      preferredModel,
-      onAttemptError: (model, err) => log(emit, `⚠ ${model.label}: ${truncate(err.message, 90)}`, "error"),
-    });
-
-  return unstable_cache(
-    run,
-    ["llm-write", PROMPT_VERSION, query.toLowerCase(), preferredModel ?? "auto", hash(material)],
-    { revalidate: LLM_CACHE_SECONDS }
-  )();
-}
-
-// ── Step 5: assemble ────────────────────────────────────
+// ── Step 3: assemble ────────────────────────────────────
 
 function toSource(s: ScoredArticle): SourceRef {
   return {
@@ -370,24 +300,24 @@ function toSource(s: ScoredArticle): SourceRef {
   };
 }
 
-function assembleChapter(h: ChapterHarvest, written: WrittenChapter | null): ChapterData {
+function assembleChapter(h: ChapterHarvest): ChapterData {
   const hero = h.hero?.article ?? null;
   const f = hero?.fields ?? {};
-  const grounded = Boolean(written?.synopsis);
   const secondary = h.secondary.map(toSource);
   const noiseTitles = secondary.map((s) => s.title.toUpperCase());
+  const fallbackBody = stripHtml(f.standfirst) || stripHtml(f.trailText);
+  const aiNarration = Boolean(h.plan.synopsis);
 
   return {
     index: h.plan.index,
     arcTag: h.plan.arcTag,
-    arcLabel: written?.arcLabel || h.plan.arcLabel,
+    arcLabel: h.plan.arcLabel,
     dateRange: h.plan.dateRange,
     keyword: h.plan.keyword,
     headline: hero?.webTitle ?? "Silence in the archive",
-    // Fallback is Guardian copy, never ungrounded AI text
-    body: grounded && written ? written.synopsis : stripHtml(f.standfirst) || stripHtml(f.trailText),
-    grounded,
-    insight: written?.insight ?? "",
+    body: aiNarration ? h.plan.synopsis : fallbackBody,
+    aiNarration,
+    insight: h.plan.aiHint,
     guardian: {
       excerpt: firstWords(f.bodyText, 90) || stripHtml(f.trailText) || stripHtml(f.standfirst),
       date: hero ? formatGuardianDate(hero.webPublicationDate) : h.plan.dateRange,
@@ -417,35 +347,29 @@ export async function buildDocumentary(
   emit: Emit
 ): Promise<DocumentaryData> {
   log(emit, `Query received: "${query}"`, "ok");
-  progress(emit, 3);
+  progress(emit, 5);
 
-  // 1. Evidence
-  log(emit, "Scanning the Guardian archive for evidence...");
-  let evidence: Evidence;
-  try {
-    evidence = await getEvidence(query);
-  } catch (err) {
-    throw new PipelineError(`Guardian archive unavailable — ${message(err)}`);
-  }
-  log(
-    emit,
-    `→ ${evidence.total.toLocaleString("en-GB")} archive matches · ${evidence.lines.length} dated headlines read`,
-    "ok"
-  );
-  if (evidence.lines.length === 0) {
-    log(emit, "→ No direct matches: the plan relies on model knowledge", "pending");
-  }
-  progress(emit, 12);
-
-  // 2. Plan
-  log(emit, "Planning the 5-act arc from real headlines...");
+  // 1. Arc
+  log(emit, "Designing the 5-act narrative arc...");
   let plan: ArcPlan;
   try {
-    plan = await planArc(query, evidence, preferredModel, emit);
+    plan = await planArc(query, preferredModel, emit);
   } catch (err) {
-    throw new PipelineError(`Arc planning failed — ${message(err)}`);
+    if (err instanceof LlmError && err.kind === "rate_limit") {
+      throw new PipelineError(
+        "The free AI quota is busy right now. Wait a minute and retry.",
+        err.message
+      );
+    }
+    if (err instanceof LlmError && err.kind === "config") {
+      throw new PipelineError("No AI model is configured on the server.", err.message);
+    }
+    throw new PipelineError(
+      "The AI could not plan this documentary. Retry, or rephrase the query.",
+      message(err)
+    );
   }
-  log(emit, `→ Planned by ${plan.model.label}`, "ok");
+  log(emit, `→ Arc by ${plan.model.label}`, "ok");
   log(emit, `→ ${plan.chapters.map((c) => c.arcTag.toLowerCase()).join(" → ")}`, "ok");
   emit({
     type: "plan",
@@ -458,7 +382,7 @@ export async function buildDocumentary(
   });
   progress(emit, 25);
 
-  // 3. Retrieve + rank
+  // 2. Retrieve + rank
   log(emit, `Scorer v3 · ${SCORER_LABEL}`, "pending");
   const usedHeroIds = new Set<string>();
   const harvests: ChapterHarvest[] = [];
@@ -490,7 +414,7 @@ export async function buildDocumentary(
         : "→ no articles in this window: silence in the archive",
       harvest.hero ? "ok" : "pending"
     );
-    progress(emit, 25 + Math.round(((ch.index + 1) / 5) * 45));
+    progress(emit, 25 + Math.round(((ch.index + 1) / 5) * 70));
   }
 
   if (harvests.every((h) => !h.hero)) {
@@ -499,37 +423,17 @@ export async function buildDocumentary(
     );
   }
 
-  // 4. Narration
-  log(emit, "Writing narration from the retrieved articles only...");
-  const material = buildMaterial(harvests);
-  let written: { data: WriteResult; model: ModelOption } | null = null;
-  try {
-    written = await writeNarration(query, material, plan.model.id, emit);
-    const grounded = harvests.filter((h) => h.hero).length;
-    log(emit, `→ Narration by ${written.model.label} · grounded in ${grounded} hero articles`, "ok");
-  } catch (err) {
-    log(
-      emit,
-      `→ Narration unavailable (${truncate(message(err), 70)}) — showing Guardian standfirsts`,
-      "error"
-    );
-  }
-  progress(emit, 92);
-
-  // 5. Assemble
-  const chapters = harvests.map((h, i) => assembleChapter(h, written?.data.chapters[i] ?? null));
+  // 3. Assemble
+  const chapters = harvests.map(assembleChapter);
   const heroScores = chapters.filter((c) => c.guardian.articleId).map((c) => c.score);
-  const scannedIds = new Set([
-    ...evidence.ids,
-    ...harvests.flatMap((h) => h.scored.map((s) => s.article.id)),
-  ]);
+  const scannedIds = new Set(harvests.flatMap((h) => h.scored.map((s) => s.article.id)));
 
   const data: DocumentaryData = {
     version: DOC_VERSION,
     query,
-    subtitle: written?.data.subtitle || "A documentary excavated from the Guardian archive",
+    subtitle: plan.subtitle || "A documentary excavated from the Guardian archive",
     chapters,
-    interludes: written?.data.interludes ?? [FALLBACK_INTERLUDES[0], FALLBACK_INTERLUDES[1]],
+    interludes: plan.interludes,
     stats: {
       scanned: scannedIds.size,
       archiveMatches: harvests.reduce((sum, h) => sum + h.total, 0),
@@ -538,7 +442,7 @@ export async function buildDocumentary(
           ? Math.round(heroScores.reduce((a, b) => a + b, 0) / heroScores.length)
           : 0,
     },
-    model: written ? toModelRef(written.model) : plan.model,
+    model: plan.model,
     generatedAt: new Date().toISOString(),
   };
 

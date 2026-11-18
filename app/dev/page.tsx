@@ -26,9 +26,8 @@ interface GuardianResponse {
 
 interface PlanResponse {
   query: string;
-  evidenceCount: number;
-  archiveTotal: number;
-  evidence: string[];
+  subtitle: string;
+  interludes: [string, string];
   model: { id: string; label: string };
   chapters: Array<{
     index: number;
@@ -40,6 +39,8 @@ interface PlanResponse {
     focusDate: string;
     keyword: string;
     section?: string;
+    synopsis: string;
+    aiHint: string;
   }>;
 }
 
@@ -150,7 +151,7 @@ export default function DiagnosticPage() {
         DEEPSCROLL
       </h1>
       <p style={{ fontSize: 10, letterSpacing: "0.2em", textTransform: "uppercase", color: "var(--mid)", marginBottom: 40 }}>
-        // Dev diagnostic — health · Guardian + scorer v3 · arc planning
+        // Dev diagnostic — health · Guardian + scorer v3 · arc (single LLM call)
       </p>
 
       {/* ── Health ───────────────────────────────────── */}
@@ -284,7 +285,7 @@ export default function DiagnosticPage() {
 
       {/* ── Arc planning ─────────────────────────────── */}
       <section style={{ ...sectionStyle, borderBottom: "none" }}>
-        <h2 style={h2Style}>Arc planning (LLM pass 1, grounded)</h2>
+        <h2 style={h2Style}>Arc (single LLM call)</h2>
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 8, marginBottom: 16 }}>
           <input value={orchQuery} onChange={(e) => setOrchQuery(e.target.value)} onKeyDown={(e) => e.key === "Enter" && runOrchestrate()} placeholder="Historical query, e.g. Brexit" style={inputStyle} />
@@ -298,7 +299,7 @@ export default function DiagnosticPage() {
         {plan && (
           <div>
             <div style={{ fontSize: 10, letterSpacing: "0.15em", textTransform: "uppercase", color: "var(--mid)", marginBottom: 12 }}>
-              {plan.model.label} · anchored to {plan.evidenceCount} headlines · {plan.archiveTotal.toLocaleString("en-GB")} archive matches
+              {plan.model.label} · {plan.subtitle}
             </div>
 
             {plan.chapters.map((ch) => (
@@ -324,16 +325,16 @@ export default function DiagnosticPage() {
                     <span>focus {ch.focusDate}</span>
                     {ch.section && <span>section: {ch.section}</span>}
                   </div>
+                  <div style={{ fontFamily: "var(--serif)", fontStyle: "italic", fontSize: 13, color: "#333", marginTop: 6, lineHeight: 1.5 }}>
+                    {ch.synopsis}
+                  </div>
                 </div>
               </div>
             ))}
 
-            {plan.evidence.length > 0 && (
-              <details style={{ marginTop: 16, fontSize: 11, color: "var(--mid)" }}>
-                <summary style={{ cursor: "crosshair" }}>Evidence headlines ({plan.evidence.length})</summary>
-                <pre style={{ whiteSpace: "pre-wrap", lineHeight: 1.6, marginTop: 8 }}>{plan.evidence.join("\n")}</pre>
-              </details>
-            )}
+            <div style={{ fontSize: 11, color: "var(--mid)", marginTop: 16, lineHeight: 1.8 }}>
+              Interludes: {plan.interludes.join(" · ")}
+            </div>
           </div>
         )}
       </section>

@@ -71,17 +71,50 @@ const PROVIDERS: Record<
 // ── Errors ──────────────────────────────────────────────
 
 export class HttpError extends Error {
-  constructor(public status: number, message: string) {
+  constructor(
+    public status: number,
+    message: string,
+    /** Seconds the provider asked us to wait (429), if it said so */
+    public retryAfter?: number
+  ) {
     super(message);
     this.name = "HttpError";
   }
 }
 
+export type LlmFailureKind = "rate_limit" | "config" | "other";
+
 export class LlmError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    /** What went wrong overall — drives the user-facing message */
+    public kind: LlmFailureKind = "other"
+  ) {
     super(message);
     this.name = "LlmError";
   }
+}
+
+/** Longest wait we accept on a 429 before moving on to the next provider */
+const MAX_RATE_LIMIT_WAIT_S = 8;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Seconds to wait from a 429: the retry-after header, or the hint in the
+ * body ("Please try again in 870ms" / "in 1.725s"). Defaults to 2s.
+ */
+function parseRetryAfter(header: string | null, body: string): number {
+  const fromHeader = Number(header);
+  if (Number.isFinite(fromHeader) && fromHeader > 0) return fromHeader;
+  const match = body.match(/try again in\s+([\d.]+)\s*(ms|s)\b/i);
+  if (match) {
+    const value = parseFloat(match[1]);
+    if (Number.isFinite(value)) return match[2].toLowerCase() === "ms" ? value / 1000 : value;
+  }
+  return 2;
 }
 
 function toError(err: unknown): Error {
@@ -142,14 +175,18 @@ export async function generateJson<T>(
 ): Promise<{ data: T; model: ModelOption }> {
   const chain = resolveModelChain(opts.preferredModel);
   if (chain.length === 0) {
-    throw new LlmError("No LLM configured — set GROQ_API_KEY or MISTRAL_API_KEY");
+    throw new LlmError("No LLM configured — set GROQ_API_KEY or MISTRAL_API_KEY", "config");
   }
 
   const failures: string[] = [];
+  let rateLimited = 0;
 
   for (const model of chain) {
-    const modes: ResponseMode[] = ["json_schema", "json_object"];
-    for (const mode of modes) {
+    let mode: ResponseMode = "json_schema";
+    let waitedForRateLimit = false;
+
+    // At most: schema → (wait on 429) → plain JSON mode. Then next provider.
+    for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const text = await callChat(model, opts, mode);
         const data = opts.validate(parseJson(text));
@@ -158,14 +195,30 @@ export async function generateJson<T>(
         const e = toError(err);
         failures.push(`${model.label} [${mode}]: ${e.message}`);
         opts.onAttemptError?.(model, e);
-        // Only retry in plain JSON mode when the provider rejected the request itself
-        const schemaRejected = e instanceof HttpError && e.status === 400;
-        if (!(mode === "json_schema" && schemaRejected)) break;
+
+        if (e instanceof HttpError && e.status === 429) {
+          // Free tiers: the per-minute budget frees up within seconds — wait once
+          const wait = e.retryAfter ?? 2;
+          if (!waitedForRateLimit && wait <= MAX_RATE_LIMIT_WAIT_S) {
+            waitedForRateLimit = true;
+            await sleep(Math.ceil(wait * 1000) + 250);
+            continue;
+          }
+          rateLimited++;
+          break;
+        }
+        // Schema rejected by the provider (e.g. Groq json_validate_failed): plain JSON mode
+        if (e instanceof HttpError && e.status === 400 && mode === "json_schema") {
+          mode = "json_object";
+          continue;
+        }
+        break;
       }
     }
   }
 
-  throw new LlmError(`All models failed — ${failures.join(" | ")}`);
+  const kind: LlmFailureKind = rateLimited === chain.length ? "rate_limit" : "other";
+  throw new LlmError(`All models failed — ${failures.join(" | ")}`, kind);
 }
 
 async function callChat<T>(
@@ -221,7 +274,9 @@ async function callChat<T>(
 
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
-    throw new HttpError(res.status, `HTTP ${res.status} ${detail.slice(0, 240)}`.trim());
+    const retryAfter =
+      res.status === 429 ? parseRetryAfter(res.headers.get("retry-after"), detail) : undefined;
+    throw new HttpError(res.status, `HTTP ${res.status} ${detail.slice(0, 240)}`.trim(), retryAfter);
   }
 
   const json = (await res.json()) as {

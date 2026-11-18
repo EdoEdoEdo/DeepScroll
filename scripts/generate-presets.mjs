@@ -92,8 +92,8 @@ for (const preset of items) {
     failures++;
     console.error(`   ✗ ${err instanceof Error ? err.message : err}`);
   }
-  // Be gentle with the Guardian rate limit
-  await new Promise((r) => setTimeout(r, 2000));
+  // Free tiers: ~8K tokens/min on Groq → leave room between documentaries
+  await new Promise((r) => setTimeout(r, 20000));
 }
 
 process.exit(failures > 0 ? 1 : 0);

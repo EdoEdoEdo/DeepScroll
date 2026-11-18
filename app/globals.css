@@ -1248,6 +1248,25 @@ body {
     max-width: 960px;
     overflow-wrap: anywhere;
 }
+.error-detail {
+    margin-top: 20px;
+    max-width: 960px;
+    font-size: 11px;
+    color: #777;
+}
+.error-detail summary {
+    cursor: crosshair;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    font-size: 10px;
+}
+.error-detail pre {
+    margin-top: 10px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font-family: var(--mono);
+    line-height: 1.6;
+}
 .error-actions {
     display: flex;
     gap: 12px;

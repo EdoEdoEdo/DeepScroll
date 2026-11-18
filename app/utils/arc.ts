@@ -2,10 +2,10 @@ import type { ArcTag } from "./types";
 import presetsJson from "./presets.json";
 
 /** Data shape version of DocumentaryData (pre-generated presets must match) */
-export const DOC_VERSION = 2;
+export const DOC_VERSION = 3;
 
 /** Version shown in the UI */
-export const APP_VERSION = "v2.0";
+export const APP_VERSION = "v2.1";
 
 /**
  * Narrative arc structure — fixed 5-chapter dramaturgy.

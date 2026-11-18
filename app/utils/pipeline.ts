@@ -29,6 +29,14 @@ interface PresetFile {
   data: DocumentaryData;
 }
 
+/** Error from the pipeline: readable message + optional technical detail */
+export class PipelineRunError extends Error {
+  constructor(message: string, public detail?: string) {
+    super(message);
+    this.name = "PipelineRunError";
+  }
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -68,7 +76,7 @@ export async function runDocumentary(
       case "result":
         return event.data;
       case "error":
-        throw new Error(event.message);
+        throw new PipelineRunError(event.message, event.detail);
     }
   };
 

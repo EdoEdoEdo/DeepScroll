@@ -112,7 +112,7 @@ export default function Finale({ data, onReset, onReadMore }: FinaleProps) {
         <div className="finale-sources">
           <div className="finale-sources-label">
             // Primary sources · The Guardian
-            {data.model ? ` · narration by ${data.model.label}, written from these articles` : ""}
+            {data.model ? ` · arc and narration by ${data.model.label}` : ""}
           </div>
           <ol className="finale-source-list">
             {sources.map((ch) => (

@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { buildDocumentary, normalizeQuery, MAX_QUERY_LENGTH } from "@/app/utils/documentary";
+import {
+  buildDocumentary,
+  normalizeQuery,
+  PipelineError,
+  MAX_QUERY_LENGTH,
+} from "@/app/utils/documentary";
 import { clientIp, rateLimit } from "@/app/utils/rate-limit";
 import type { PipelineEvent } from "@/app/utils/types";
 
@@ -55,8 +60,9 @@ export async function POST(request: NextRequest) {
         send({ type: "result", data });
       } catch (err) {
         const message = err instanceof Error ? err.message : "Pipeline failed";
-        console.error("[Documentary]", message);
-        send({ type: "error", message });
+        const detail = err instanceof PipelineError ? err.detail : undefined;
+        console.error("[Documentary]", message, detail ?? "");
+        send({ type: "error", message, detail });
       } finally {
         try {
           controller.close();

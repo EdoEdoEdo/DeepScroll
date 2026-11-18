@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useEffect, useRef } from "react";
 import type { ChapterStatus, DocumentaryData, LogLine, PlannedChapter } from "@/app/utils/types";
-import { runDocumentary } from "@/app/utils/pipeline";
+import { runDocumentary, PipelineRunError } from "@/app/utils/pipeline";
 import { FALLBACK_INTERLUDES, INTERLUDE_BEFORE } from "@/app/utils/arc";
 import { ScrollTrigger, refreshScroll } from "@/app/utils/gsap";
 import QueryScreen from "@/app/components/QueryScreen";
@@ -40,6 +40,7 @@ export default function DeepScrollPage() {
   const [chapterStatus, setChapterStatus] = useState<Array<ChapterStatus | null>>(emptyChapters);
   const [documentary, setDocumentary] = useState<DocumentaryData | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [errorDetail, setErrorDetail] = useState<string | null>(null);
   const [overlayArticleId, setOverlayArticleId] = useState<string | null>(null);
   const runId = useRef(0);
   const didInit = useRef(false);
@@ -56,6 +57,7 @@ export default function DeepScrollPage() {
     setPlan(null);
     setChapterStatus(emptyChapters());
     setErrorMsg(null);
+    setErrorDetail(null);
     window.scrollTo(0, 0);
 
     try {
@@ -89,6 +91,7 @@ export default function DeepScrollPage() {
     } catch (err) {
       if (!isCurrent()) return;
       setErrorMsg(err instanceof Error ? err.message : "Pipeline failed");
+      setErrorDetail(err instanceof PipelineRunError ? err.detail ?? null : null);
       setState("error");
     }
   }, []);
@@ -121,6 +124,7 @@ export default function DeepScrollPage() {
     setChapterStatus(emptyChapters());
     setDocumentary(null);
     setErrorMsg(null);
+    setErrorDetail(null);
     setOverlayArticleId(null);
     setQueryParam(null);
     window.scrollTo(0, 0);
@@ -161,6 +165,12 @@ export default function DeepScrollPage() {
         <section className="loading-screen error-screen">
           <div className="loading-header">// Pipeline error · {query}</div>
           <div className="error-message">{errorMsg}</div>
+          {errorDetail && (
+            <details className="error-detail">
+              <summary>Technical detail</summary>
+              <pre>{errorDetail}</pre>
+            </details>
+          )}
           <div className="error-actions">
             <button className="reset-btn" onClick={handleRetry}>
               ↻ Retry

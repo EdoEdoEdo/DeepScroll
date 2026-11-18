@@ -11,7 +11,7 @@ The Guardian API · AI Orchestration · Scrollytelling
 
 ### The premise is simple.
 
-You type a historical query. The AI doesn't write about it — it *excavates* it. It reads real Guardian headlines, designs a 5-act narrative arc, searches The Guardian's archive of over two million articles, scores and ranks the results, then writes the narration **only from the articles it found**, and renders everything into an interactive scrollytelling documentary.
+You type a historical query. The AI doesn't write about it — it *excavates* it. It designs a 5-act narrative arc, searches The Guardian's archive of over two million articles, scores and ranks the results, and renders them into an interactive scrollytelling documentary.
 
 Every headline is real. Every excerpt is real. Every source is attributed. The AI is the director and the narrator. The Guardian is the author.
 
@@ -23,11 +23,9 @@ Every headline is real. Every excerpt is real. Every source is attributed. The A
 User query
     │
     ▼
-Guardian evidence search ── 40 real headlines with dates
-    ▼
-LLM pass 1 · plan (GPT-OSS 120B on Groq · Mistral Small 4 fallback)
-    │ → 5-act arc anchored to the evidence
-    │ → keyword, date window, focal date, section per act
+LLM · one call (GPT-OSS 120B on Groq · Mistral Small 4 fallback)
+    │ → 5-act arc: keyword, date window, focal date, section per act
+    │ → voiceover per act, subtitle, 2 interludes
     ▼
 Guardian Content API × 5 (throttled, cached)
     │ → 20 articles per act, bodyText excerpts
@@ -37,16 +35,14 @@ Scorer v3 → hero per act, never the same article twice
     │ → Relevance 35% · Date proximity 25% · Tone 20%
     │ → Narrative density 10% · Media 10%
     ▼
-LLM pass 2 · write — narration from the retrieved articles only
-    ▼
 NDJSON stream → live log → 5-act scrollytelling documentary
 ```
 
-The pipeline runs server-side in one streamed request (`POST /api/documentary`). The browser receives log, plan and per-chapter events as they happen, so the loading screen shows the real work, not an animation.
+One LLM call per documentary (about 2–3k tokens), so it runs comfortably on the free tiers of Groq and Mistral. The pipeline runs server-side in one streamed request (`POST /api/documentary`): the browser receives log, plan and per-chapter events as they happen, so the loading screen shows the real work.
 
-Both LLM calls use JSON Schema structured output (strict, constrained decoding). Models are called through the providers' OpenAI-compatible endpoints with plain `fetch`: no SDK to break, and swapping a model is a one-line change. If a provider fails, the next one takes over automatically.
+The call asks for JSON Schema structured output. Models are called through the providers' OpenAI-compatible endpoints with plain `fetch`: no SDK to break, and swapping a model is a one-line change. On a free-tier rate limit (429) the server waits the few seconds the provider asks for and retries; if a provider is down, the other one takes over.
 
-Guardian calls and both LLM passes are cached through Next's data cache, so a repeated query costs nothing. The preset queries can also be pre-generated as static files (see *Presets*).
+The LLM call and the Guardian searches are cached through Next's data cache, so a repeated query costs nothing. The preset queries can also be pre-generated as static files (see *Presets*).
 
 ---
 
@@ -70,7 +66,7 @@ This is not a timeline. It's a dramaturgy. The difference matters: "2007, 2008, 
 
 **Brutalist, not decorative.** The interface exposes its own machinery — scorer breakdowns, word counts, section tags, article IDs. Metadata is not hidden; it's an aesthetic choice.
 
-**AI as curator, not author.** The intelligence layer organizes real journalism into narrative structure. Its narration is written from the retrieved articles only, and every act links back to the article it stands on. When the narrator is unavailable, the Guardian's own standfirst is shown instead — never ungrounded text.
+**AI as curator, not author.** The intelligence layer organizes real journalism into narrative structure: it chooses the moments and writes the voiceover, while headlines, excerpts and sources are real Guardian copy, attributed and linked in every act.
 
 **Scroll as excavation.** The scroll is not navigation — it's the act of digging through collective digital memory. The depth bar tracks your progress. The strata index under each act lists the other articles from that window. The interludes force you to pause.
 
@@ -161,13 +157,13 @@ The model switch appears automatically in the UI when more than one key is confi
 | Route | Purpose |
 |-------|---------|
 | `/` | Full documentary experience · `/?q=Brexit` opens a documentary directly (shareable) |
-| `/dev` | Diagnostic — health, Guardian + scorer, arc planning |
+| `/dev` | Diagnostic — health, Guardian + scorer, arc |
 | `/api/documentary` | POST `{ query, model? }` → NDJSON stream of pipeline events + result |
 | `/api/health` | Real checks: Guardian request, provider key + model availability |
 | `/api/models` | Available models based on configured keys |
 | `/api/guardian?q=...` | Guardian search + scorer (diagnostic) |
 | `/api/guardian/article?id=...` | Single article for the overlay (sanitized) |
-| `/api/orchestrate` | POST `{ query, model? }` → evidence + arc plan only (diagnostic) |
+| `/api/orchestrate` | POST `{ query, model? }` → arc only, the LLM call (diagnostic) |
 
 ---
 
@@ -180,7 +176,7 @@ app/
 │   ├── guardian/
 │   │   ├── route.ts              # Search + scorer (diagnostic)
 │   │   └── article/route.ts      # Single article for the overlay
-│   ├── orchestrate/route.ts      # Evidence + arc plan (diagnostic)
+│   ├── orchestrate/route.ts      # Arc only (diagnostic)
 │   ├── models/route.ts           # Available models endpoint
 │   └── health/route.ts           # Real connectivity + model checks
 ├── components/
@@ -198,9 +194,9 @@ app/
 │   ├── ArticleOverlay.tsx        # Full article reading modal
 │   └── InfoModal.tsx             # Project info overlay
 ├── utils/
-│   ├── documentary.ts            # Server pipeline (evidence → plan → rank → write)
-│   ├── llm.ts                    # Groq/Mistral via fetch, structured output, fallback
-│   ├── prompts.ts                # Prompts + JSON Schemas for both passes
+│   ├── documentary.ts            # Server pipeline (arc → retrieve → rank)
+│   ├── llm.ts                    # Groq/Mistral via fetch, structured output, 429 retry, fallback
+│   ├── prompts.ts                # Prompt + JSON Schema of the LLM call
 │   ├── guardian-client.ts        # Throttled, cached Guardian client
 │   ├── scorer.ts                 # Article ranking v3
 │   ├── pipeline.ts               # Client runner — presets or NDJSON stream
@@ -243,7 +239,7 @@ All scroll animations use GSAP + ScrollTrigger:
 - Not a news aggregator
 - Not a chatbot
 - Not a search engine
-- Not a content generator — the journalism is The Guardian's; the narration is written from it
+- Not a content generator — the journalism is The Guardian's; the AI only directs and narrates
 - Not a timeline — it's a dramaturgy
 
 ---

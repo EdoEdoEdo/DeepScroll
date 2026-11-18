@@ -163,6 +163,8 @@ export interface GenerateJsonOptions<T> {
   maxTokens: number;
   temperature?: number;
   timeoutMs?: number;
+  /** Groq reasoning models: "low" | "medium" | "high" (default "low") */
+  reasoningEffort?: "low" | "medium" | "high";
   preferredModel?: string;
   /** Called on each failed attempt (for logs) */
   onAttemptError?: (model: ModelOption, err: Error) => void;
@@ -254,7 +256,7 @@ async function callChat<T>(
   if (model.provider === "groq") {
     // gpt-oss is a reasoning model: keep reasoning short and out of the content
     body.max_completion_tokens = opts.maxTokens;
-    body.reasoning_effort = "low";
+    body.reasoning_effort = opts.reasoningEffort ?? "low";
     body.include_reasoning = false;
   } else {
     // Mistral Small 4 defaults to no reasoning → plain string content

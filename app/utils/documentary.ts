@@ -229,7 +229,10 @@ export async function planArc(
       prompt: buildOrchestratePrompt(query, today),
       schema: ORCHESTRATE_SCHEMA,
       validate: (raw) => validateArc(raw, query, today),
-      maxTokens: 4000,
+      // Medium reasoning: better dates and keywords, ~1-2k tokens more (fine for a demo)
+      maxTokens: 8000,
+      reasoningEffort: "medium",
+      timeoutMs: 60_000,
       temperature: 0.7,
       preferredModel,
       onAttemptError: (model, err) => emit && log(emit, attemptMessage(model.label, err), "error"),
@@ -380,11 +383,19 @@ async function harvestChapter(
     res = await searchGuardian({ q: query, ...searchWindow });
   }
 
+  // Prelude: the topic usually has no name yet → reward the keyword's own words instead
+  const keywordWords = plan.keyword
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((w) => w.length >= 3 && !QUERY_FILLERS.has(w) && !terms.includes(w));
   const scored = scoreArticles(res.results, {
     dateFrom: plan.dateFrom,
     dateTo: plan.dateTo,
     focusDate: plan.focusDate,
     topicTerms: terms,
+    ...(plan.index === 0
+      ? { keywordTerms: { terms: keywordWords, min: Math.min(2, keywordWords.length) } }
+      : {}),
   });
 
   // The same article never leads two chapters

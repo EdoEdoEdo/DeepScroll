@@ -12,7 +12,7 @@
  */
 
 /** Bump when the prompt changes — part of the LLM cache key */
-export const PROMPT_VERSION = "p5";
+export const PROMPT_VERSION = "p6";
 
 /** Accepted Guardian section ids (anything else is dropped in code) */
 export const GUARDIAN_SECTIONS = [
@@ -68,6 +68,7 @@ CRITICAL RULES:
 - The Guardian archive starts in 1999; no window may end after today's date
 - The arc is DRAMATURGICAL: "blindness → signal → collapse → response → aftermath"
 - synopsis must be substantive (60-80 words each), not one-line summaries
+- Only use numbers, names and dates you are certain of: no number is better than an approximate or inflated one. Never state that a law passed, a person was convicted or an event happened unless it did
 - keyword should be specific enough to find relevant Guardian articles for that exact moment
 - interludes must be specific to this event, never generic
 

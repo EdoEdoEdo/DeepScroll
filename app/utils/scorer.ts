@@ -31,15 +31,37 @@ export interface ScoreContext {
   focusDate?: string;
   /** Words of the documentary topic (lower case): articles naming it get a bonus */
   topicTerms?: string[];
+  /**
+   * Alternative when the topic has no name yet (Prelude): bonus if at least
+   * `min` of these keyword words appear in the headline or standfirst
+   */
+  keywordTerms?: { terms: string[]; min: number };
 }
+
+/** Sections that rarely make a good primary source for a news documentary */
+const SOFT_SECTIONS = new Set([
+  "music", "culture", "film", "books", "tv-and-radio", "stage", "artanddesign",
+  "lifeandstyle", "fashion", "food", "travel", "games", "crosswords", "money",
+]);
+/** Points removed from the final score (≈5 positions in a 20-result list) */
+const SOFT_SECTION_PENALTY = 12;
 
 /** Points added when the headline or standfirst names the topic */
 const TOPIC_BONUS = 15;
 
-function mentionsTopic(article: GuardianResult, terms: string[] | undefined): boolean {
-  if (!terms || terms.length === 0) return false;
-  const text = `${article.webTitle} ${article.fields?.trailText ?? ""} ${article.fields?.standfirst ?? ""}`.toLowerCase();
-  return terms.every((t) => text.includes(t));
+function headlineText(article: GuardianResult): string {
+  return `${article.webTitle} ${article.fields?.trailText ?? ""} ${article.fields?.standfirst ?? ""}`.toLowerCase();
+}
+
+function mentionsTopic(article: GuardianResult, ctx: ScoreContext): boolean {
+  const text = headlineText(article);
+  const topicHit =
+    Boolean(ctx.topicTerms && ctx.topicTerms.length > 0) &&
+    ctx.topicTerms!.every((t) => text.includes(t));
+  const keywordHit =
+    Boolean(ctx.keywordTerms && ctx.keywordTerms.terms.length > 0) &&
+    ctx.keywordTerms!.terms.filter((t) => text.includes(t)).length >= ctx.keywordTerms!.min;
+  return topicHit || keywordHit;
 }
 
 // ── Scoring Functions ───────────────────────────────────
@@ -146,7 +168,8 @@ export function scoreArticles(
     };
 
     const raw =
-      (mentionsTopic(article, ctx.topicTerms) ? TOPIC_BONUS : 0) +
+      (mentionsTopic(article, ctx) ? TOPIC_BONUS : 0) -
+      (SOFT_SECTIONS.has(article.sectionId) ? SOFT_SECTION_PENALTY : 0) +
       breakdown.relevance * WEIGHTS.relevance +
       breakdown.proximity * WEIGHTS.proximity +
       breakdown.tone * WEIGHTS.tone +
@@ -157,7 +180,7 @@ export function scoreArticles(
       raw,
       result: {
         article,
-        score: Math.min(100, Math.round(raw)),
+        score: Math.max(0, Math.min(100, Math.round(raw))),
         breakdown,
         wordcount,
         hasImage: breakdown.media > 0,

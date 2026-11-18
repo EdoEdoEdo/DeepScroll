@@ -238,6 +238,35 @@ export async function planArc(
 
 // ── Step 2: retrieve + rank per chapter ─────────────────
 
+// ── Topic anchoring ─────────────────────────────────────
+
+const STOPWORDS = new Set([
+  "the", "and", "for", "from", "with", "into", "over", "after", "before", "during",
+  "fall", "rise", "end", "war", "crisis", "story", "history", "of", "in", "on", "a", "an",
+]);
+
+/**
+ * The 1–2 most distinctive words of the query ("Fall of Afghanistan" →
+ * ["afghanistan"], "George Floyd" → ["george", "floyd"]). Used to keep every
+ * chapter search on topic, and to boost articles that name the topic.
+ */
+export function topicTerms(query: string): string[] {
+  const words = query
+    .toLowerCase()
+    .split(/[^a-z0-9\-]+/)
+    .filter((w) => w.length >= 3 && !STOPWORDS.has(w) && !/^\d+$/.test(w));
+  const unique = [...new Set(words)];
+  if (unique.length <= 2) return unique;
+  return unique.sort((a, b) => b.length - a.length).slice(0, 2);
+}
+
+/** Guardian query requiring the topic AND every keyword word */
+function anchoredQuery(keyword: string, terms: string[]): string {
+  const words = keyword.split(/\s+/).filter((w) => w && !terms.includes(w.toLowerCase()));
+  const parts = [...terms, ...words].map((w) => (/[\s-]/.test(w) ? `"${w}"` : w));
+  return parts.join(" AND ");
+}
+
 interface ChapterHarvest {
   plan: PlanChapter;
   total: number;
@@ -247,20 +276,54 @@ interface ChapterHarvest {
 }
 
 async function harvestChapter(
-  plan: PlanChapter,
+  input: PlanChapter,
   query: string,
   usedHeroIds: Set<string>,
   emit: Emit
 ): Promise<ChapterHarvest> {
-  const searchWindow = {
+  let plan = input;
+  const terms = topicTerms(query);
+  const currentWindow = () => ({
     fromDate: plan.dateFrom,
     toDate: plan.dateTo,
     orderBy: "relevance" as const,
     pageSize: 20,
     withBody: true,
-  };
+  });
 
-  let res = await searchGuardian({ q: plan.keyword, ...searchWindow, section: plan.section });
+  // 1. Topic AND keyword, inside the window chosen by the AI
+  let res = { results: [] as Awaited<ReturnType<typeof searchGuardian>>["results"], total: 0 };
+  if (terms.length > 0) {
+    const anchored = anchoredQuery(plan.keyword, terms);
+    res = await searchGuardian({ q: anchored, ...currentWindow() });
+
+    // 2. Empty window: the AI may have the date wrong — find when the Guardian covered it.
+    //    Not for the Prelude: it is *before* the event, the topic may not exist yet.
+    if (res.results.length === 0 && plan.index > 0) {
+      const undated = await searchGuardian({ q: anchored, orderBy: "relevance", pageSize: 10 });
+      const top = undated.results[0];
+      if (top) {
+        const span = Math.max(Date.parse(plan.dateTo) - Date.parse(plan.dateFrom), (MIN_WINDOW_DAYS[plan.index] ?? 3) * DAY_MS);
+        const focusMs = Date.parse(top.webPublicationDate.slice(0, 10));
+        const today = Date.parse(todayIso());
+        plan = {
+          ...plan,
+          focusDate: toIso(focusMs),
+          dateFrom: toIso(focusMs - span / 2),
+          dateTo: toIso(Math.min(focusMs + span / 2, today)),
+        };
+        plan = { ...plan, dateRange: `${formatGuardianDate(plan.dateFrom)} – ${formatGuardianDate(plan.dateTo)}` };
+        log(emit, `→ no coverage in the planned window: re-centred on ${plan.dateFrom} → ${plan.dateTo}`, "pending");
+        res = await searchGuardian({ q: anchored, ...currentWindow() });
+      }
+    }
+  }
+
+  // 3. Fallbacks: plain keyword (with section, then without), then the topic
+  const searchWindow = currentWindow();
+  if (res.results.length === 0) {
+    res = await searchGuardian({ q: plan.keyword, ...searchWindow, section: plan.section });
+  }
 
   if (res.results.length === 0 && plan.section) {
     log(emit, `→ nothing in section "${plan.section}", widening to all sections`, "pending");
@@ -275,6 +338,7 @@ async function harvestChapter(
     dateFrom: plan.dateFrom,
     dateTo: plan.dateTo,
     focusDate: plan.focusDate,
+    topicTerms: terms,
   });
 
   // The same article never leads two chapters

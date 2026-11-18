@@ -32,8 +32,8 @@ Guardian Content API × 5 (throttled, cached)
     │ → section / topic fallback if a window is empty
     ▼
 Scorer v3 → hero per act, never the same article twice
-    │ → Relevance 35% · Date proximity 25% · Tone 20%
-    │ → Narrative density 10% · Media 10%
+    │ → Relevance 50% · Tone 15% · Narrative density 15%
+    │ → Date proximity 10% · Media 10% · +15 if the headline names the topic
     ▼
 NDJSON stream → live log → 5-act scrollytelling documentary
 ```

@@ -8,20 +8,20 @@ import type { GuardianResult, ScoredArticle } from "./types";
  * thumbnail, so it decided nothing; date proximity now does the work.
  */
 export const WEIGHTS = {
-  /** Guardian's own relevance ranking */
-  relevance: 0.35,
-  /** Closeness to the chapter's focal date */
-  proximity: 0.25,
+  /** Guardian's own relevance ranking — the strongest signal, as in v1 */
+  relevance: 0.5,
+  /** Closeness to the chapter's focal date (a tie-breaker, not a driver) */
+  proximity: 0.1,
   /** Reported news preferred over opinion, letters, galleries */
-  tone: 0.2,
+  tone: 0.15,
   /** Substantive length, not wire snippets nor 5,000-word essays */
-  narrative: 0.1,
+  narrative: 0.15,
   /** Has a usable image */
   media: 0.1,
 } as const;
 
 /** Human-readable weights, for logs and the info panel */
-export const SCORER_LABEL = "Relevance 35% · Date proximity 25% · Tone 20% · Density 10% · Media 10%";
+export const SCORER_LABEL = "Relevance 50% · Tone 15% · Density 15% · Date proximity 10% · Media 10%";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -29,6 +29,17 @@ export interface ScoreContext {
   dateFrom?: string;
   dateTo?: string;
   focusDate?: string;
+  /** Words of the documentary topic (lower case): articles naming it get a bonus */
+  topicTerms?: string[];
+}
+
+/** Points added when the headline or standfirst names the topic */
+const TOPIC_BONUS = 15;
+
+function mentionsTopic(article: GuardianResult, terms: string[] | undefined): boolean {
+  if (!terms || terms.length === 0) return false;
+  const text = `${article.webTitle} ${article.fields?.trailText ?? ""} ${article.fields?.standfirst ?? ""}`.toLowerCase();
+  return terms.every((t) => text.includes(t));
 }
 
 // ── Scoring Functions ───────────────────────────────────
@@ -135,6 +146,7 @@ export function scoreArticles(
     };
 
     const raw =
+      (mentionsTopic(article, ctx.topicTerms) ? TOPIC_BONUS : 0) +
       breakdown.relevance * WEIGHTS.relevance +
       breakdown.proximity * WEIGHTS.proximity +
       breakdown.tone * WEIGHTS.tone +
@@ -145,7 +157,7 @@ export function scoreArticles(
       raw,
       result: {
         article,
-        score: Math.round(raw),
+        score: Math.min(100, Math.round(raw)),
         breakdown,
         wordcount,
         hasImage: breakdown.media > 0,

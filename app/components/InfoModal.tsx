@@ -59,8 +59,8 @@ export default function InfoModal({ open, onClose }: InfoModalProps) {
           (Prelude → Signal → Crisis → Response → Aftermath)<br />
           <strong>Data source</strong> — The Guardian Content API, real-time
           search and scoring<br />
-          <strong>Scorer</strong> — Relevance 35% · Date proximity 25% · Tone
-          20% · Narrative density 10% · Media 10%<br />
+          <strong>Scorer</strong> — Relevance 50% · Tone 15% · Narrative
+          density 15% · Date proximity 10% · Media 10%<br />
           <strong>Models</strong> — GPT-OSS 120B on Groq · Mistral Small 4 as
           automatic fallback<br />
           <strong>Stack</strong> — Next.js 15 · GSAP ScrollTrigger · NDJSON

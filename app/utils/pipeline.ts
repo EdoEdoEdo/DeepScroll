@@ -1,9 +1,6 @@
 /**
- * Client-side runner.
- *
- * 1. Preset query with a pre-generated file in /public/presets → replay it
- *    (instant, no API quota, works even if every LLM provider is down).
- * 2. Otherwise POST /api/documentary and read the NDJSON event stream.
+ * Client-side runner: POST /api/documentary and read the NDJSON event
+ * stream. Every documentary is generated live — no pre-recorded editions.
  */
 import type {
   ChapterStatus,
@@ -12,7 +9,6 @@ import type {
   PipelineEvent,
   PlannedChapter,
 } from "./types";
-import { DOC_VERSION, findPreset, slugify } from "./arc";
 
 export interface PipelineCallbacks {
   onLog: (line: LogLine) => void;
@@ -21,24 +17,12 @@ export interface PipelineCallbacks {
   onChapter: (status: ChapterStatus) => void;
 }
 
-/** Shape of /public/presets/<slug>.json (written by scripts/generate-presets.mjs) */
-interface PresetFile {
-  version: number;
-  query: string;
-  events: PipelineEvent[];
-  data: DocumentaryData;
-}
-
 /** Error from the pipeline: readable message + optional technical detail */
 export class PipelineRunError extends Error {
   constructor(message: string, public detail?: string) {
     super(message);
     this.name = "PipelineRunError";
   }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /** Real elapsed time since the run started, "mm:ss" */
@@ -80,22 +64,6 @@ export async function runDocumentary(
     }
   };
 
-  // ── 1. Pre-generated preset ───────────────────────────
-  const preset = findPreset(query);
-  if (preset) {
-    const file = await loadPreset(slugify(preset.query));
-    if (file) {
-      cb.onLog({ time: clock(), text: "Loading the pre-generated edition of this documentary", status: "ok" });
-      for (const event of file.events) {
-        if (event.type === "result" || event.type === "error") continue;
-        dispatch(event);
-        await sleep(event.type === "log" ? 70 : 20);
-      }
-      return file.data;
-    }
-  }
-
-  // ── 2. Live pipeline (NDJSON stream) ──────────────────
   const res = await fetch("/api/documentary", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -144,16 +112,4 @@ export async function runDocumentary(
 
   if (!result) throw new Error("The stream ended without a documentary");
   return result;
-}
-
-async function loadPreset(slug: string): Promise<PresetFile | null> {
-  try {
-    const res = await fetch(`/presets/${slug}.json`);
-    if (!res.ok) return null;
-    const file = (await res.json()) as PresetFile;
-    if (file.version !== DOC_VERSION || !file.data || !Array.isArray(file.events)) return null;
-    return file;
-  } catch {
-    return null;
-  }
 }

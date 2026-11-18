@@ -343,6 +343,15 @@ async function harvestChapter(
 ): Promise<ChapterHarvest> {
   let plan = input;
   const terms = topicTerms(query);
+
+  // Aftermath: searched up to today. The model's knowledge stops at its
+  // cutoff, the archive doesn't — the latest turning point comes from here.
+  const plannedTo = plan.dateTo;
+  const today = todayIso();
+  if (plan.index === 4 && plan.dateTo < today) {
+    plan = { ...plan, dateTo: today };
+    log(emit, `→ Aftermath searched up to today (${today})`, "pending");
+  }
   const currentWindow = () => ({
     fromDate: plan.dateFrom,
     toDate: plan.dateTo,
@@ -375,10 +384,10 @@ async function harvestChapter(
           (MIN_WINDOW_DAYS[plan.index] ?? 7) * DAY_MS
         );
         const focusMs = Date.parse(best.day);
-        const today = Date.parse(todayIso());
+        const todayMs = Date.parse(today);
         const forward = FORWARD_WINDOW[plan.index];
         const dateFrom = toIso(forward ? focusMs - DAY_MS : focusMs - span / 2);
-        const dateTo = toIso(Math.min(forward ? focusMs + span - DAY_MS : focusMs + span / 2, today));
+        const dateTo = toIso(Math.min(forward ? focusMs + span - DAY_MS : focusMs + span / 2, todayMs));
         plan = {
           ...plan,
           focusDate: best.day,
@@ -477,12 +486,33 @@ async function harvestChapter(
     }
   }
 
+  // Live blogs cover the whole day's news: one leads or enters the index
+  // only if its headline names the topic ("WikiLeaks US embassy cables: live
+  // updates" yes, an Australian politics blog that mentions Assange no)
+  if (terms.length > 0) {
+    const before = ranked.length;
+    ranked = ranked.filter(
+      (s) => s.article.type !== "liveblog" || terms.every((t) => s.article.webTitle.toLowerCase().includes(t))
+    );
+    if (ranked.length < before) {
+      log(emit, `→ ${before - ranked.length} live blog${before - ranked.length === 1 ? "" : "s"} set aside: not about "${terms.join(" ")}"`, "pending");
+    }
+  }
+
   // The same article never leads two chapters
   const hero = ranked.find((s) => !usedHeroIds.has(s.article.id)) ?? null;
   if (hero) usedHeroIds.add(hero.article.id);
   const secondary = ranked
     .filter((s) => s !== hero && !usedHeroIds.has(s.article.id))
     .slice(0, 8);
+
+  // Aftermath led by an article past the planned window: show the real span
+  const heroDay = hero?.article.webPublicationDate.slice(0, 10);
+  if (plan.index === 4 && heroDay && heroDay > plannedTo) {
+    const fromYear = plan.dateFrom.slice(0, 4);
+    const heroYear = heroDay.slice(0, 4);
+    plan = { ...plan, dateRange: fromYear === heroYear ? heroYear : `${fromYear} – ${heroYear}` };
+  }
 
   return { plan, total, scored: ranked, hero, secondary };
 }

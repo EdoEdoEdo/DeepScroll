@@ -96,7 +96,7 @@ export default function DeepScrollPage() {
     }
   }, []);
 
-  // Shared link: /?q=Brexit → generate (or load the preset) straight away
+  // Shared link: /?q=Brexit → generate straight away
   useEffect(() => {
     if (didInit.current) return;
     didInit.current = true;

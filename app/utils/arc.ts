@@ -1,11 +1,11 @@
 import type { ArcTag } from "./types";
 import presetsJson from "./presets.json";
 
-/** Data shape version of DocumentaryData (pre-generated presets must match) */
+/** Data shape version of DocumentaryData */
 export const DOC_VERSION = 3;
 
 /** Version shown in the UI */
-export const APP_VERSION = "v2.1.7";
+export const APP_VERSION = "v2.1.8";
 
 /**
  * Narrative arc structure — fixed 5-chapter dramaturgy.
@@ -67,30 +67,12 @@ export const FALLBACK_INTERLUDES = [
  */
 export const INTERLUDE_BEFORE = [2, 4] as const;
 
-// ── Presets ─────────────────────────────────────────────
+// ── Landing suggestions ─────────────────────────────────
 
+/** Suggested queries on the landing — generated live like any other query */
 export interface Preset {
   label: string;
   query: string;
 }
 
 export const PRESETS: Preset[] = presetsJson.items;
-
-/**
- * URL-safe slug — must stay identical to slugify() in
- * scripts/generate-presets.mjs (pre-generated files are named with it).
- */
-export function slugify(text: string): string {
-  return text
-    .toLowerCase()
-    .normalize("NFKD")
-    .replace(/[̀-ͯ]/g, "")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-}
-
-/** Preset matching a query (case/spacing-insensitive), if any */
-export function findPreset(query: string): Preset | undefined {
-  const slug = slugify(query);
-  return PRESETS.find((p) => slugify(p.query) === slug);
-}

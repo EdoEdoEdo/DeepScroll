@@ -46,7 +46,7 @@ export const MODEL_OPTIONS: ModelOption[] = [
   },
 ];
 
-/** Old IDs still accepted (bookmarked clients, old presets) */
+/** Old IDs still accepted (bookmarked clients, old links) */
 const LEGACY_IDS: Record<string, string> = {
   "groq-llama": "groq-gpt-oss-120b",
   "mistral-small": "mistral-small-4",

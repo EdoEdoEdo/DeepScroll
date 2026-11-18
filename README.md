@@ -31,6 +31,8 @@ Guardian Content API × 5 (throttled, cached)
     │ → 20 articles per act, bodyText excerpts
     │ → topic / keyword / section fallbacks if a window is empty
     │ → loose (OR) results kept only if the headline names the topic
+    │ → live blogs only if their headline names the topic
+    │ → Aftermath searched up to today (the archive outlives the model's knowledge)
     ▼
 Scorer v3 → hero per act, never the same article twice
     │ → Relevance 50% · Tone 15% · Narrative density 15%
@@ -48,7 +50,7 @@ Two LLM calls per documentary (about 7–8k tokens in all), so it runs on the fr
 
 Both calls ask for JSON Schema structured output. Models are called through the providers' OpenAI-compatible endpoints with plain `fetch`: no SDK to break, and swapping a model is a one-line change. On a free-tier rate limit (429) the server waits the few seconds the provider asks for and retries; if a provider is down, the other one takes over.
 
-The LLM calls and the Guardian searches are cached through Next's data cache, so a repeated query costs nothing. The preset queries can also be pre-generated as static files (see *Presets*).
+The LLM calls and the Guardian searches are cached through Next's data cache, so a repeated query costs nothing.
 
 ---
 
@@ -125,19 +127,6 @@ Visit `http://localhost:3000/api/health` to verify your keys — it checks that 
 
 ---
 
-### Presets
-
-The landing presets can be pre-generated as static files, so they load instantly, cost no API quota and keep working even if every LLM provider is down:
-
-```bash
-npm run dev        # terminal 1
-npm run presets    # terminal 2 → writes public/presets/<slug>.json
-```
-
-Commit the generated files. They are versioned: when the data shape changes, stale files are ignored until you regenerate them. The preset list lives in `app/utils/presets.json`.
-
----
-
 ### Changing or adding a model
 
 Models live in `MODEL_OPTIONS` in `app/utils/llm.ts`:
@@ -186,7 +175,7 @@ app/
 │   ├── models/route.ts           # Available models endpoint
 │   └── health/route.ts           # Real connectivity + model checks
 ├── components/
-│   ├── QueryScreen.tsx           # Landing — input, presets, model switch, info
+│   ├── QueryScreen.tsx           # Landing — input, suggestions, model switch, info
 │   ├── ArchStrata.tsx            # Landing — magnetic strata bars
 │   ├── LoadingScreen.tsx         # Live log + strata filling per act
 │   ├── DocHeader.tsx             # Documentary header with real stats
@@ -202,13 +191,13 @@ app/
 ├── utils/
 │   ├── documentary.ts            # Server pipeline (arc → retrieve → rank → check)
 │   ├── llm.ts                    # Groq/Mistral via fetch, structured output, 429 retry, fallback
-│   ├── prompts.ts                # Prompt + JSON Schema of the LLM call
+│   ├── prompts.ts                # Prompts + JSON Schemas (arc, fact-check)
 │   ├── guardian-client.ts        # Throttled, cached Guardian client
 │   ├── scorer.ts                 # Article ranking v3
-│   ├── pipeline.ts               # Client runner — presets or NDJSON stream
+│   ├── pipeline.ts               # Client runner — NDJSON stream
 │   ├── rate-limit.ts             # Best-effort per-IP limiter
-│   ├── arc.ts                    # Narrative constants, presets, versions
-│   ├── presets.json              # Landing presets (shared with the script)
+│   ├── arc.ts                    # Narrative constants, suggestions, versions
+│   ├── presets.json              # Landing suggestions (always generated live)
 │   ├── types.ts                  # All TypeScript interfaces
 │   ├── text.ts                   # HTML stripping/sanitizing, image extraction
 │   └── gsap.ts                   # GSAP + ScrollTrigger registration
@@ -216,7 +205,6 @@ app/
 ├── globals.css                   # Brutalist design system
 ├── layout.tsx                    # Root layout, fonts, metadata
 └── page.tsx                      # State machine, shareable ?q=
-scripts/generate-presets.mjs      # Pre-generate presets into public/presets
 ```
 
 ---

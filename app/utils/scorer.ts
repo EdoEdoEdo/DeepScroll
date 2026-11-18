@@ -54,11 +54,15 @@ function headlineText(article: GuardianResult): string {
   return `${article.webTitle} ${article.fields?.trailText ?? ""} ${article.fields?.standfirst ?? ""}`.toLowerCase();
 }
 
+/** Headline, trail or standfirst contain every one of these words (lower case) */
+export function namesTopic(article: GuardianResult, terms: string[]): boolean {
+  const text = headlineText(article);
+  return terms.length > 0 && terms.every((t) => text.includes(t));
+}
+
 function mentionsTopic(article: GuardianResult, ctx: ScoreContext): boolean {
   const text = headlineText(article);
-  const topicHit =
-    Boolean(ctx.topicTerms && ctx.topicTerms.length > 0) &&
-    ctx.topicTerms!.every((t) => text.includes(t));
+  const topicHit = namesTopic(article, ctx.topicTerms ?? []);
   const kw = ctx.keywordTerms;
   const matched = kw ? kw.terms.filter((t) => text.includes(t)) : [];
   const keywordHit =

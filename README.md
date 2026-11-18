@@ -30,6 +30,7 @@ LLM · arc (GPT-OSS 120B on Groq · Mistral Small 4 fallback)
 Guardian Content API × 5 (throttled, cached)
     │ → 20 articles per act, bodyText excerpts
     │ → topic / keyword / section fallbacks if a window is empty
+    │ → loose (OR) results kept only if the headline names the topic
     ▼
 Scorer v3 → hero per act, never the same article twice
     │ → Relevance 50% · Tone 15% · Narrative density 15%

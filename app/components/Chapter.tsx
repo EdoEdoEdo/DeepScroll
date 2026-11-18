@@ -333,7 +333,7 @@ export default function Chapter({ chapter, onReadMore }: ChapterProps) {
         {isCrisis ? (
           <div className="chapter-side">{guardianBox}</div>
         ) : (
-          <div className={`chapter-right${ch.imageUrl ? "" : " no-image"}`}>
+          <div className="chapter-right">
             {ch.imageUrl && (
               <>
                 {/* eslint-disable-next-line @next/next/no-img-element */}

@@ -15,10 +15,10 @@
  */
 
 /** Bump when the prompt changes — part of the LLM cache key */
-export const PROMPT_VERSION = "p7";
+export const PROMPT_VERSION = "p8";
 
 /** Bump when the fact-check prompt changes — part of its cache key */
-export const CHECK_VERSION = "c1";
+export const CHECK_VERSION = "c2";
 
 /** Accepted Guardian section ids (anything else is dropped in code) */
 export const GUARDIAN_SECTIONS = [
@@ -46,7 +46,7 @@ Your role is dramaturgical: you organize real events into a compelling narrative
 
 The 5 chapters follow a fixed structure:
 1. PRELUDE — Context before the event. Systemic blindness, ignored warnings, false normalcy.
-2. SIGNAL — The first visible crack. A specific event that marks the beginning in retrospect.
+2. SIGNAL — The first visible crack. A specific event that marks the beginning in retrospect: the first moment that made the news, not a founding date or a launch nobody reported at the time.
 3. CRISIS — The breaking point. Maximum coverage density, maximum impact.
 4. RESPONSE — How the system responds. Bailouts, political decisions, mobilization.
 5. AFTERMATH — The bill comes due. Long-term impact, structural changes.
@@ -59,18 +59,19 @@ For each chapter, provide:
 - dateTo: ISO date for search end (YYYY-MM-DD)
 - focusDate: ISO date of the single most significant day inside that window (YYYY-MM-DD)
 - section: Guardian section filter (use "business", "world", "politics", "uk-news", "us-news", "science", "environment", "society", or empty string if broad)
-- synopsis: A RICH narrative paragraph (3-5 sentences, ~60-80 words). Write it like a documentary voiceover: dramatic, factual, cinematic. Include specific dates, names and numbers only when you are certain of them. This text will be displayed as the chapter body.
+- synopsis: A RICH narrative paragraph (3-5 sentences, ~60-80 words). Write it like a documentary voiceover: dramatic, factual, cinematic. Include specific numbers, dates, names where historically accurate. This text will be displayed as the chapter body.
 - aiHint: A brief analytical observation (1-2 sentences) about what the Guardian coverage of this period would reveal — e.g. linguistic patterns, coverage density, editorial blind spots, semantic shifts.
 
 Also provide:
 - subtitle: A documentary subtitle, poetic and evocative (e.g. "The collapse that reshaped global capitalism")
-- interludes: An array of exactly 2 short, powerful statements specific to THIS story. These appear as dramatic red cards between chapters. They should hit hard through names, places, images or a provocative framing — NEVER numbers, figures, statistics or dates (no digits, no counts written in words). Examples: "A bank fell. Then the world followed." or "The video the world could not unsee." or "A country voted. Nobody had a plan." Each must be under 15 words.
+- interludes: An array of exactly 2 short, powerful statements specific to THIS story. These appear as dramatic red cards between chapters. They should hit hard and be concrete: name a person, a place, an object or a moment of this story — NEVER numbers, figures, statistics or dates (no digits, no counts written in words). Examples: "Lehman fell. Wall Street followed." or "A Wuhan market, then the whole world." or "Westminster voted. Brussels waited." Each must be under 15 words.
 
 CRITICAL RULES:
 - EVERYTHING must be in English
 - Date ranges must be historically accurate, chronological and non-overlapping
 - The arc covers the WHOLE story, from its origins to its consequences — not only its latest developments
 - Windows must be wide enough to contain articles: at least a few days for single events, months for context chapters
+- Every window must fall in a period when newspapers were already covering the subject (for the PRELUDE: its direct context — the people, institutions or tensions that led to it). Never build a chapter on a moment the press did not report at the time
 - The Guardian archive starts in 1999; no window may end after today's date
 - The arc is DRAMATURGICAL: "blindness → signal → collapse → response → aftermath"
 - synopsis must be substantive (60-80 words each), not one-line summaries
@@ -140,7 +141,8 @@ Make every text accurate while changing as little as possible:
 - Correct any statement the articles contradict: dates, counts, names, outcomes, who did what, which court or body decided what, and in which order.
 - Also correct statements you know to be false, even if the articles do not cover them.
 - A number, date or detail that the articles do not confirm and you are not certain of must go: remove it or make it general ("thousands", "that summer"). Never replace a guess with another guess.
-- Do not add facts that are not in the articles. Never mention the Guardian, the articles or "sources" in the texts.
+- The first article listed for a chapter (the one with a summary) is its main source. If it reports the key event of that period and the synopsis does not mention it, add one sentence about it, using only what that article says, and shorten the rest to stay within the length.
+- Do not add any other fact that is not in the articles. Never mention the Guardian, the articles or "sources" in the texts.
 - Keep the documentary voice, English, and the length: synopsis 60-80 words, aiHint 1-2 sentences.
 - arcLabel: keep it unless it states something false or uncertain; then write a new 3-6 word label in the same spirit.
 - aiHint describes what the coverage of that period reveals: keep it consistent with the headlines listed for that chapter.

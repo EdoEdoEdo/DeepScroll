@@ -26,7 +26,7 @@ import type {
 } from "./types";
 import { ARC_STRUCTURE, DOC_VERSION, FALLBACK_INTERLUDES } from "./arc";
 import { searchGuardian } from "./guardian-client";
-import { scoreArticles, SCORER_LABEL } from "./scorer";
+import { namesTopic, scoreArticles, SCORER_LABEL } from "./scorer";
 import { generateJson, HttpError, LlmError, toModelRef } from "./llm";
 import {
   CHECK_SCHEMA,
@@ -240,8 +240,9 @@ export async function planArc(
       maxTokens: 8000,
       reasoningEffort: "medium",
       timeoutMs: 60_000,
-      // Low: fewer "creative" numbers in the narration, same arc quality
-      temperature: 0.3,
+      // v1 value: 0.3 made the arc timid (generic labels, chapters on
+      // uncovered "origins"); accuracy is the fact-check's job now
+      temperature: 0.7,
       preferredModel,
       onAttemptError: (model, err) => emit && log(emit, attemptMessage(model.label, err), "error"),
     });
@@ -422,7 +423,9 @@ async function harvestChapter(
     }
   }
 
-  // 5. Loose fallbacks: plain keyword (with section, then without), then the topic
+  // 5. Loose fallbacks: plain keyword (with section, then without), then the topic.
+  //    Guardian reads plain words as OR: what comes back is filtered below.
+  const foundBeforeLoose = res.results.length > 0;
   if (res.results.length === 0) {
     res = await searchGuardian({ q: plan.keyword, ...searchWindow, section: plan.section });
   }
@@ -455,14 +458,30 @@ async function harvestChapter(
       : {}),
   });
 
+  // Loose results count only if they name the topic ("Introduction",
+  // "Recipe for activism"): a wrong hero is worse than an honest silence
+  let ranked = scored;
+  let total = res.total;
+  if (!foundBeforeLoose && scored.length > 0 && terms.length > 0) {
+    ranked = scored.filter((s) => namesTopic(s.article, terms));
+    total = ranked.length;
+    if (ranked.length < scored.length) {
+      log(
+        emit,
+        `→ loose search: kept ${ranked.length} of ${scored.length} articles naming "${terms.join(" ")}"`,
+        "pending"
+      );
+    }
+  }
+
   // The same article never leads two chapters
-  const hero = scored.find((s) => !usedHeroIds.has(s.article.id)) ?? null;
+  const hero = ranked.find((s) => !usedHeroIds.has(s.article.id)) ?? null;
   if (hero) usedHeroIds.add(hero.article.id);
-  const secondary = scored
+  const secondary = ranked
     .filter((s) => s !== hero && !usedHeroIds.has(s.article.id))
     .slice(0, 8);
 
-  return { plan, total: res.total, scored, hero, secondary };
+  return { plan, total, scored: ranked, hero, secondary };
 }
 
 // ── Step 3: fact-check (best effort) ────────────────────

@@ -23,26 +23,30 @@ Every headline is real. Every excerpt is real. Every source is attributed. The A
 User query
     │
     ▼
-LLM · one call (GPT-OSS 120B on Groq · Mistral Small 4 fallback)
+LLM · arc (GPT-OSS 120B on Groq · Mistral Small 4 fallback)
     │ → 5-act arc: keyword, date window, focal date, section per act
     │ → voiceover per act, subtitle, 2 interludes
     ▼
 Guardian Content API × 5 (throttled, cached)
     │ → 20 articles per act, bodyText excerpts
-    │ → section / topic fallback if a window is empty
+    │ → topic / keyword / section fallbacks if a window is empty
     ▼
 Scorer v3 → hero per act, never the same article twice
     │ → Relevance 50% · Tone 15% · Narrative density 15%
     │ → Date proximity 10% · Media 10% · +15 if the headline names the topic
     ▼
+LLM · fact-check (best effort)
+    │ → voiceover, labels and interludes reread next to the articles found
+    │ → corrected where the articles contradict them; windows untouched
+    ▼
 NDJSON stream → live log → 5-act scrollytelling documentary
 ```
 
-One LLM call per documentary (about 2–3k tokens), so it runs comfortably on the free tiers of Groq and Mistral. The pipeline runs server-side in one streamed request (`POST /api/documentary`): the browser receives log, plan and per-chapter events as they happen, so the loading screen shows the real work.
+Two LLM calls per documentary (about 7–8k tokens in all), so it runs on the free tiers of Groq and Mistral: the arc, written from the model's own knowledge as in v1, and a lighter fact-check once the articles are known. If the check fails or time runs short, the draft narration is kept. The pipeline runs server-side in one streamed request (`POST /api/documentary`): the browser receives log, plan and per-chapter events as they happen, so the loading screen shows the real work.
 
-The call asks for JSON Schema structured output. Models are called through the providers' OpenAI-compatible endpoints with plain `fetch`: no SDK to break, and swapping a model is a one-line change. On a free-tier rate limit (429) the server waits the few seconds the provider asks for and retries; if a provider is down, the other one takes over.
+Both calls ask for JSON Schema structured output. Models are called through the providers' OpenAI-compatible endpoints with plain `fetch`: no SDK to break, and swapping a model is a one-line change. On a free-tier rate limit (429) the server waits the few seconds the provider asks for and retries; if a provider is down, the other one takes over.
 
-The LLM call and the Guardian searches are cached through Next's data cache, so a repeated query costs nothing. The preset queries can also be pre-generated as static files (see *Presets*).
+The LLM calls and the Guardian searches are cached through Next's data cache, so a repeated query costs nothing. The preset queries can also be pre-generated as static files (see *Presets*).
 
 ---
 
@@ -194,7 +198,7 @@ app/
 │   ├── ArticleOverlay.tsx        # Full article reading modal
 │   └── InfoModal.tsx             # Project info overlay
 ├── utils/
-│   ├── documentary.ts            # Server pipeline (arc → retrieve → rank)
+│   ├── documentary.ts            # Server pipeline (arc → retrieve → rank → check)
 │   ├── llm.ts                    # Groq/Mistral via fetch, structured output, 429 retry, fallback
 │   ├── prompts.ts                # Prompt + JSON Schema of the LLM call
 │   ├── guardian-client.ts        # Throttled, cached Guardian client

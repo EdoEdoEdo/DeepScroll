@@ -47,8 +47,10 @@ export default function InfoModal({ open, onClose }: InfoModalProps) {
             The AI acts as director: it designs the arc, the search for each
             act and the voiceover. Then the Guardian archive is searched and
             ranked, and the best article becomes the primary source of each
-            act. Headlines, excerpts and sources are real Guardian copy; the
-            narration is the AI&apos;s, and every act links back to its source.
+            act. Finally the AI rereads its voiceover next to the articles
+            found and corrects what they contradict. Headlines, excerpts and
+            sources are real Guardian copy; the narration is the AI&apos;s, and
+            every act links back to its source.
           </p>
         </div>
 

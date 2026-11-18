@@ -33,9 +33,10 @@ export interface ScoreContext {
   topicTerms?: string[];
   /**
    * Alternative when the topic has no name yet (Prelude): bonus if at least
-   * `min` of these keyword words appear in the headline or standfirst
+   * `min` of these keyword words appear in the headline or standfirst, and
+   * at least one of them is in `anyOf` (the most distinctive) when given
    */
-  keywordTerms?: { terms: string[]; min: number };
+  keywordTerms?: { terms: string[]; min: number; anyOf?: string[] };
 }
 
 /** Sections that rarely make a good primary source for a news documentary */
@@ -58,9 +59,12 @@ function mentionsTopic(article: GuardianResult, ctx: ScoreContext): boolean {
   const topicHit =
     Boolean(ctx.topicTerms && ctx.topicTerms.length > 0) &&
     ctx.topicTerms!.every((t) => text.includes(t));
+  const kw = ctx.keywordTerms;
+  const matched = kw ? kw.terms.filter((t) => text.includes(t)) : [];
   const keywordHit =
-    Boolean(ctx.keywordTerms && ctx.keywordTerms.terms.length > 0) &&
-    ctx.keywordTerms!.terms.filter((t) => text.includes(t)).length >= ctx.keywordTerms!.min;
+    Boolean(kw && kw.terms.length > 0) &&
+    matched.length >= kw!.min &&
+    (!kw!.anyOf || kw!.anyOf.length === 0 || matched.some((t) => kw!.anyOf!.includes(t)));
   return topicHit || keywordHit;
 }
 

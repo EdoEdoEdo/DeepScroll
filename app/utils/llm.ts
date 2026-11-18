@@ -166,8 +166,20 @@ export interface GenerateJsonOptions<T> {
   /** Groq reasoning models: "low" | "medium" | "high" (default "low") */
   reasoningEffort?: "low" | "medium" | "high";
   preferredModel?: string;
+  /**
+   * Epoch ms: no attempt starts after it and every call is cut at it
+   * (keeps optional steps inside the serverless time limit)
+   */
+  deadline?: number;
   /** Called on each failed attempt (for logs) */
   onAttemptError?: (model: ModelOption, err: Error) => void;
+}
+
+/** Below this, an attempt cannot finish anyway */
+const MIN_ATTEMPT_MS = 3_000;
+
+function timeLeft(deadline?: number): number {
+  return deadline === undefined ? Infinity : deadline - Date.now();
 }
 
 type ResponseMode = "json_schema" | "json_object";
@@ -183,12 +195,16 @@ export async function generateJson<T>(
   const failures: string[] = [];
   let rateLimited = 0;
 
-  for (const model of chain) {
+  models: for (const model of chain) {
     let mode: ResponseMode = "json_schema";
     let waitedForRateLimit = false;
 
     // At most: schema → (wait on 429) → plain JSON mode. Then next provider.
     for (let attempt = 0; attempt < 3; attempt++) {
+      if (timeLeft(opts.deadline) < MIN_ATTEMPT_MS) {
+        failures.push("time budget exhausted");
+        break models;
+      }
       try {
         const text = await callChat(model, opts, mode);
         const data = opts.validate(parseJson(text));
@@ -201,7 +217,8 @@ export async function generateJson<T>(
         if (e instanceof HttpError && e.status === 429) {
           // Free tiers: the per-minute budget frees up within seconds — wait once
           const wait = e.retryAfter ?? 2;
-          if (!waitedForRateLimit && wait <= MAX_RATE_LIMIT_WAIT_S) {
+          const fitsBudget = wait * 1000 + MIN_ATTEMPT_MS < timeLeft(opts.deadline);
+          if (!waitedForRateLimit && wait <= MAX_RATE_LIMIT_WAIT_S && fitsBudget) {
             waitedForRateLimit = true;
             await sleep(Math.ceil(wait * 1000) + 250);
             continue;
@@ -271,7 +288,9 @@ async function callChat<T>(
     },
     body: JSON.stringify(body),
     cache: "no-store",
-    signal: AbortSignal.timeout(opts.timeoutMs ?? 45_000),
+    signal: AbortSignal.timeout(
+      Math.max(1, Math.min(opts.timeoutMs ?? 45_000, timeLeft(opts.deadline)))
+    ),
   });
 
   if (!res.ok) {

@@ -1474,19 +1474,28 @@ body {
     flex-direction: column;
     min-height: 0;
 }
+/* Framed editorial photo: as wide as the text column (+ margin), 3:2 */
 .act-aftermath .chapter-right {
     order: -1;
+    width: min(960px, calc(100% - 80px));
+    margin: 64px auto 0;
     min-height: 0;
-    height: clamp(200px, 30vw, 380px);
+    height: auto;
+    aspect-ratio: 3 / 2;
     background: var(--paper);
-    border-bottom: 1px solid var(--ink);
+    border: 1px solid var(--ink);
+}
+/* No photo: a low typographic band instead of an empty frame */
+.act-aftermath .chapter-right.no-image {
+    aspect-ratio: auto;
+    height: clamp(160px, 20vw, 240px);
 }
 .act-aftermath .chapter-img {
-    opacity: 0.5;
-    filter: grayscale(100%) contrast(0.9) brightness(1.08);
+    opacity: 0.6;
+    filter: grayscale(100%) contrast(0.95) brightness(1.05);
 }
 .act-aftermath .chapter-img-overlay {
-    background: linear-gradient(180deg, transparent 20%, var(--paper) 100%);
+    background: linear-gradient(180deg, transparent 55%, rgba(242, 239, 232, 0.55) 100%);
 }
 .act-aftermath .chapter-noise {
     opacity: 0.06;
@@ -1500,7 +1509,7 @@ body {
     width: 100%;
     max-width: 800px;
     margin: 0 auto;
-    padding: 64px 40px;
+    padding: 48px 40px 64px;
     border-right: none;
 }
 .act-aftermath .chapter-headline {
@@ -1851,7 +1860,14 @@ body {
         padding: 28px 24px;
     }
     .act-aftermath .chapter-left {
-        padding: 40px 24px;
+        padding: 32px 24px 40px;
+    }
+    .act-aftermath .chapter-right {
+        width: 100%;
+        margin: 0;
+        aspect-ratio: 4 / 3;
+        border: none;
+        border-bottom: 1px solid var(--ink);
     }
     .strata-index {
         padding: 20px 24px;

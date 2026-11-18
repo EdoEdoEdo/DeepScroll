@@ -2,10 +2,12 @@
  * Documentary pipeline — server only.
  *
  *   query
- *     → one LLM call: 5-act arc (search windows + narration + interludes),
- *       from the model's own knowledge — same approach as v1, ~2k tokens
+ *     → LLM call 1: 5-act arc (search windows + narration + interludes),
+ *       from the model's own knowledge — same approach as v1
  *     → Guardian search per act (throttled, cached)
  *     → scorer v3 → hero per act, never the same article twice
+ *     → LLM call 2 (best effort, ~3k tokens): the narration is reread next
+ *       to the articles found and corrected where they contradict it
  *     → DocumentaryData
  *
  * Progress is reported through `emit` (streamed to the browser as NDJSON).
@@ -27,11 +29,16 @@ import { searchGuardian } from "./guardian-client";
 import { scoreArticles, SCORER_LABEL } from "./scorer";
 import { generateJson, HttpError, LlmError, toModelRef } from "./llm";
 import {
+  CHECK_SCHEMA,
+  CHECK_SYSTEM,
+  CHECK_VERSION,
   GUARDIAN_SECTIONS,
   ORCHESTRATE_SCHEMA,
   ORCHESTRATE_SYSTEM,
   PROMPT_VERSION,
+  buildCheckPrompt,
   buildOrchestratePrompt,
+  type CheckArticle,
 } from "./prompts";
 import { extractBestImage, firstWords, formatGuardianDate, stripHtml, truncate } from "./text";
 
@@ -233,7 +240,8 @@ export async function planArc(
       maxTokens: 8000,
       reasoningEffort: "medium",
       timeoutMs: 60_000,
-      temperature: 0.7,
+      // Low: fewer "creative" numbers in the narration, same arc quality
+      temperature: 0.3,
       preferredModel,
       onAttemptError: (model, err) => emit && log(emit, attemptMessage(model.label, err), "error"),
     });
@@ -282,6 +290,38 @@ function anchoredQuery(keyword: string, terms: string[]): string {
     .filter((w) => w && !terms.includes(w.toLowerCase()) && !QUERY_FILLERS.has(w.toLowerCase()));
   const parts = [...terms, ...words].map((w) => (/[\s-]/.test(w) ? `"${w}"` : w));
   return parts.join(" AND ");
+}
+
+/** Keyword words worth matching (lower case, no fillers, no topic words) */
+function keywordWordsOf(keyword: string, terms: string[]): string[] {
+  return [
+    ...new Set(
+      keyword
+        .toLowerCase()
+        .split(/\s+/)
+        .filter((w) => w.length >= 3 && !QUERY_FILLERS.has(w) && !STOPWORDS.has(w) && !terms.includes(w))
+    ),
+  ];
+}
+
+/**
+ * The 2 most distinctive keyword words — the longest, as in topicTerms
+ * ("wikileaks julian assange launch" → ["wikileaks", "assange"]): first
+ * names and generic verbs are short, so they never carry a search alone.
+ */
+function distinctiveWords(words: string[]): string[] {
+  return [...words].sort((a, b) => b.length - a.length).slice(0, 2);
+}
+
+/**
+ * Topic-only query for the Prelude: the exact phrase when the query reads
+ * that way ("george floyd" — not "george AND floyd", which also finds
+ * Pink Floyd pieces mentioning a George), else every topic word.
+ */
+function topicOnlyQuery(query: string, terms: string[], index: number): string {
+  const phrase = terms.join(" ");
+  if (index === 0 && terms.length > 1 && query.toLowerCase().includes(phrase)) return `"${phrase}"`;
+  return anchoredQuery("", terms);
 }
 
 interface ChapterHarvest {
@@ -354,10 +394,11 @@ async function harvestChapter(
   const searchWindow = currentWindow();
 
   // 3. Topic only, inside the window (e.g. "george AND floyd" in 2021–2023).
-  //    Not for the Prelude: before the event the topic usually has no name yet.
-  if (res.results.length === 0 && terms.length > 0 && plan.index > 0) {
+  //    Prelude too: the subject often exists before its big moment (WikiLeaks
+  //    in 2007); when it doesn't, the search is simply empty and we move on.
+  if (res.results.length === 0 && terms.length > 0) {
     log(emit, `→ widening to every article on "${terms.join(" ")}" in the window`, "pending");
-    res = await searchGuardian({ q: anchoredQuery("", terms), ...searchWindow });
+    res = await searchGuardian({ q: topicOnlyQuery(query, terms, plan.index), ...searchWindow });
   }
 
   // 4. Keyword with ALL its words required (Guardian treats plain words as OR)
@@ -366,6 +407,18 @@ async function harvestChapter(
     res = await searchGuardian({ q: strictKeyword, ...searchWindow, section: plan.section });
     if (res.results.length === 0 && plan.section) {
       res = await searchGuardian({ q: strictKeyword, ...searchWindow });
+    }
+  }
+
+  // 4b. Only the 2 most distinctive keyword words, both required — before
+  //     the loose search, where a lone first name ("julian") is enough
+  const keywordWords = keywordWordsOf(plan.keyword, terms);
+  const distinctive = distinctiveWords(keywordWordsOf(plan.keyword, []));
+  if (res.results.length === 0 && distinctive.length === 2) {
+    const relaxed = anchoredQuery(distinctive.join(" "), []);
+    if (relaxed !== strictKeyword) {
+      log(emit, `→ relaxing the search to "${distinctive.join(" ")}"`, "pending");
+      res = await searchGuardian({ q: relaxed, ...searchWindow });
     }
   }
 
@@ -383,18 +436,22 @@ async function harvestChapter(
     res = await searchGuardian({ q: query, ...searchWindow });
   }
 
-  // Prelude: the topic usually has no name yet → reward the keyword's own words instead
-  const keywordWords = plan.keyword
-    .toLowerCase()
-    .split(/\s+/)
-    .filter((w) => w.length >= 3 && !QUERY_FILLERS.has(w) && !terms.includes(w));
+  // Prelude: the topic may have no name yet → reward the keyword's own words
+  // instead, as long as the most distinctive one is among them
+  // ("assange" — never "julian" + "launch" alone)
   const scored = scoreArticles(res.results, {
     dateFrom: plan.dateFrom,
     dateTo: plan.dateTo,
     focusDate: plan.focusDate,
     topicTerms: terms,
     ...(plan.index === 0
-      ? { keywordTerms: { terms: keywordWords, min: Math.min(2, keywordWords.length) } }
+      ? {
+          keywordTerms: {
+            terms: keywordWords,
+            min: Math.min(2, keywordWords.length),
+            anyOf: distinctiveWords(keywordWords).slice(0, 1),
+          },
+        }
       : {}),
   });
 
@@ -408,7 +465,183 @@ async function harvestChapter(
   return { plan, total: res.total, scored, hero, secondary };
 }
 
-// ── Step 3: assemble ────────────────────────────────────
+// ── Step 3: fact-check (best effort) ────────────────────
+
+/** /api/documentary may run 60 s: the optional check must end before that */
+const TIME_BUDGET_MS = 55_000;
+/** Skip the check when less time than this is left */
+const CHECK_MIN_MS = 12_000;
+const CHECK_TIMEOUT_MS = 25_000;
+
+interface NarrationTexts {
+  chapters: Array<{ arcLabel: string; synopsis: string; aiHint: string }>;
+  interludes: [string, string];
+}
+
+function wordCount(text: string): number {
+  return text.split(/\s+/).filter(Boolean).length;
+}
+
+/** Field by field: a revision that is empty or out of shape keeps the draft */
+function validateCheck(raw: unknown, draft: NarrationTexts): NarrationTexts {
+  const obj = asRecord(raw);
+  const list = obj?.chapters;
+  if (!Array.isArray(list) || list.length < 5) {
+    throw new Error(`Expected 5 chapters, got ${Array.isArray(list) ? list.length : 0}`);
+  }
+
+  const chapters = draft.chapters.map((orig, i) => {
+    const ch = asRecord(list[i]) ?? {};
+    const synopsis = str(ch.synopsis);
+    const arcLabel = str(ch.arcLabel);
+    const aiHint = str(ch.aiHint);
+    const synopsisWords = wordCount(synopsis);
+    return {
+      // No draft = Guardian standfirst fallback: the check never writes one from scratch
+      synopsis: orig.synopsis && synopsisWords >= 25 && synopsisWords <= 140 ? synopsis : orig.synopsis,
+      arcLabel: arcLabel && wordCount(arcLabel) <= 8 ? arcLabel : orig.arcLabel,
+      aiHint: aiHint && wordCount(aiHint) <= 70 ? aiHint : orig.aiHint,
+    };
+  });
+
+  const revised = Array.isArray(obj?.interludes) ? (obj.interludes as unknown[]).map(str) : [];
+  const interludes = draft.interludes.map((orig, i) => {
+    const text = revised[i] ?? "";
+    if (!text || wordCount(text) > 20) return orig;
+    // Interludes carry no figures: never trade a clean draft for one with digits
+    return /\d/.test(text) && !/\d/.test(orig) ? orig : text;
+  }) as [string, string];
+
+  return { chapters, interludes };
+}
+
+/** What the checker sees: the hero (summary + opening) and the other headlines */
+function evidenceFor(h: ChapterHarvest): CheckArticle[] {
+  const list: CheckArticle[] = [];
+  if (h.hero) {
+    const a = h.hero.article;
+    const f = a.fields ?? {};
+    const lead = stripHtml(f.standfirst) || stripHtml(f.trailText);
+    const opening = firstWords(f.bodyText, 45);
+    list.push({
+      date: a.webPublicationDate.slice(0, 10),
+      title: a.webTitle,
+      summary: truncate([lead, opening].filter(Boolean).join(" — "), 500),
+    });
+  }
+  for (const s of h.secondary.slice(0, 4)) {
+    list.push({ date: s.article.webPublicationDate.slice(0, 10), title: s.article.webTitle });
+  }
+  return list;
+}
+
+function changedFields(draft: NarrationTexts, revised: NarrationTexts): number {
+  const norm = (s: string) => s.replace(/\s+/g, " ").trim();
+  let count = 0;
+  draft.chapters.forEach((d, i) => {
+    const r = revised.chapters[i];
+    if (norm(d.synopsis) !== norm(r.synopsis)) count++;
+    if (norm(d.arcLabel) !== norm(r.arcLabel)) count++;
+    if (norm(d.aiHint) !== norm(r.aiHint)) count++;
+  });
+  draft.interludes.forEach((d, i) => {
+    if (norm(d) !== norm(revised.interludes[i])) count++;
+  });
+  return count;
+}
+
+/**
+ * Second LLM call: the model rereads its narration next to the articles
+ * actually found and fixes what they contradict. Search windows, heroes
+ * and structure are untouched. Any failure keeps the draft narration.
+ */
+async function checkNarration(
+  plan: ArcPlan,
+  harvests: ChapterHarvest[],
+  preferredModel: string | undefined,
+  emit: Emit,
+  startedAt: number
+): Promise<NarrationTexts | null> {
+  if (harvests.every((h) => !h.plan.synopsis)) return null;
+
+  const deadline = startedAt + TIME_BUDGET_MS;
+  if (deadline - Date.now() < CHECK_MIN_MS) {
+    log(emit, "→ fact-check skipped: not enough time left, keeping the draft narration", "pending");
+    return null;
+  }
+
+  log(emit, "Fact-checking the narration against the articles found...");
+  const draft: NarrationTexts = {
+    chapters: harvests.map(({ plan: p }) => ({
+      arcLabel: p.arcLabel,
+      synopsis: p.synopsis,
+      aiHint: p.aiHint,
+    })),
+    interludes: plan.interludes,
+  };
+
+  const run = () =>
+    generateJson({
+      name: "documentary_check",
+      system: CHECK_SYSTEM,
+      prompt: buildCheckPrompt(
+        plan.query,
+        todayIso(),
+        harvests.map((h, i) => ({
+          arcTag: h.plan.arcTag,
+          dateRange: h.plan.dateRange,
+          ...draft.chapters[i],
+          articles: evidenceFor(h),
+        })),
+        draft.interludes
+      ),
+      schema: CHECK_SCHEMA,
+      validate: (raw) => validateCheck(raw, draft),
+      maxTokens: 4000,
+      reasoningEffort: "low",
+      temperature: 0.2,
+      timeoutMs: CHECK_TIMEOUT_MS,
+      deadline,
+      // The model that wrote the draft checks it (if Groq was busy, Mistral)
+      preferredModel: plan.model.id,
+      onAttemptError: (model, err) => log(emit, attemptMessage(model.label, err), "error"),
+    });
+
+  // Same arc + same heroes → same check: a repeated query costs no tokens
+  const heroIds = harvests.map((h) => h.hero?.article.id ?? "-").join("|");
+  const cached = unstable_cache(
+    run,
+    [
+      "llm-check",
+      CHECK_VERSION,
+      PROMPT_VERSION,
+      plan.query.toLowerCase(),
+      preferredModel ?? "auto",
+      plan.model.id,
+      heroIds,
+    ],
+    { revalidate: LLM_CACHE_SECONDS }
+  );
+
+  try {
+    const { data, model } = await cached();
+    const changes = changedFields(draft, data);
+    log(
+      emit,
+      changes > 0
+        ? `→ ${changes} passage${changes === 1 ? "" : "s"} corrected by ${model.label}`
+        : `→ narration confirmed by ${model.label}`,
+      "ok"
+    );
+    return data;
+  } catch (err) {
+    log(emit, `→ fact-check unavailable, keeping the draft narration`, "pending");
+    console.warn("[Documentary] fact-check failed:", message(err));
+    return null;
+  }
+}
+
+// ── Step 4: assemble ────────────────────────────────────
 
 function toSource(s: ScoredArticle): SourceRef {
   return {
@@ -421,7 +654,7 @@ function toSource(s: ScoredArticle): SourceRef {
   };
 }
 
-function assembleChapter(h: ChapterHarvest): ChapterData {
+function assembleChapter(h: ChapterHarvest, checked: boolean): ChapterData {
   const hero = h.hero?.article ?? null;
   const f = hero?.fields ?? {};
   const secondary = h.secondary.map(toSource);
@@ -438,6 +671,7 @@ function assembleChapter(h: ChapterHarvest): ChapterData {
     headline: hero?.webTitle ?? "Silence in the archive",
     body: aiNarration ? h.plan.synopsis : fallbackBody,
     aiNarration,
+    narrationChecked: aiNarration && checked,
     insight: h.plan.aiHint,
     guardian: {
       excerpt: firstWords(f.bodyText, 90) || stripHtml(f.trailText) || stripHtml(f.standfirst),
@@ -467,6 +701,7 @@ export async function buildDocumentary(
   preferredModel: string | undefined,
   emit: Emit
 ): Promise<DocumentaryData> {
+  const startedAt = Date.now();
   log(emit, `Query received: "${query}"`, "ok");
   progress(emit, 5);
 
@@ -538,7 +773,7 @@ export async function buildDocumentary(
         : "→ no articles in this window: silence in the archive",
       harvest.hero ? "ok" : "pending"
     );
-    progress(emit, 25 + Math.round(((ch.index + 1) / 5) * 70));
+    progress(emit, 25 + Math.round(((ch.index + 1) / 5) * 60));
   }
 
   if (harvests.every((h) => !h.hero)) {
@@ -547,8 +782,18 @@ export async function buildDocumentary(
     );
   }
 
-  // 3. Assemble
-  const chapters = harvests.map(assembleChapter);
+  // 3. Fact-check the narration against the articles found (best effort)
+  const revised = await checkNarration(plan, harvests, preferredModel, emit, startedAt);
+  if (revised) {
+    harvests.forEach((h, i) => {
+      h.plan = { ...h.plan, ...revised.chapters[i] };
+    });
+  }
+  const interludes = revised?.interludes ?? plan.interludes;
+  progress(emit, 95);
+
+  // 4. Assemble
+  const chapters = harvests.map((h) => assembleChapter(h, Boolean(revised)));
   const heroScores = chapters.filter((c) => c.guardian.articleId).map((c) => c.score);
   const scannedIds = new Set(harvests.flatMap((h) => h.scored.map((s) => s.article.id)));
 
@@ -557,7 +802,7 @@ export async function buildDocumentary(
     query,
     subtitle: plan.subtitle || "A documentary excavated from the Guardian archive",
     chapters,
-    interludes: plan.interludes,
+    interludes,
     stats: {
       scanned: scannedIds.size,
       archiveMatches: harvests.reduce((sum, h) => sum + h.total, 0),

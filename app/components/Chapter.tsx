@@ -223,9 +223,11 @@ export default function Chapter({ chapter, onReadMore }: ChapterProps) {
       )}
       {ch.body && (
         <div className="chapter-provenance">
-          {ch.aiNarration
-            ? "Narration · AI voiceover · the sources below are real Guardian articles"
-            : "Guardian standfirst · AI narration unavailable"}
+          {!ch.aiNarration
+            ? "Guardian standfirst · AI narration unavailable"
+            : ch.narrationChecked
+              ? "Narration · AI voiceover, cross-checked with the real Guardian articles below"
+              : "Narration · AI voiceover · the sources below are real Guardian articles"}
         </div>
       )}
     </>
@@ -331,7 +333,7 @@ export default function Chapter({ chapter, onReadMore }: ChapterProps) {
         {isCrisis ? (
           <div className="chapter-side">{guardianBox}</div>
         ) : (
-          <div className="chapter-right">
+          <div className={`chapter-right${ch.imageUrl ? "" : " no-image"}`}>
             {ch.imageUrl && (
               <>
                 {/* eslint-disable-next-line @next/next/no-img-element */}

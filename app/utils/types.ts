@@ -150,6 +150,8 @@ export interface ChapterData {
   body: string;
   /** true when body is the AI narration, false when it is Guardian copy */
   aiNarration: boolean;
+  /** AI narration reread and corrected against the articles found (v2.1.5+) */
+  narrationChecked?: boolean;
   /** AI observation about the coverage of this window */
   insight: string;
   /** Guardian attribution */

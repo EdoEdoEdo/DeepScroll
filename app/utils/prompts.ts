@@ -1,9 +1,12 @@
 /**
- * Prompt and JSON Schema for the single LLM call — server only.
+ * Prompts and JSON Schemas for the LLM calls — server only.
  *
- * Same approach as v1: one call, the model receives only the query and
- * returns the whole arc (search parameters, narration, interludes) from
- * its own knowledge. Cheap enough for the free tiers (~2k tokens).
+ * 1. Arc — same approach as v1: the model receives only the query and
+ *    returns the whole arc (search parameters, narration, interludes)
+ *    from its own knowledge.
+ * 2. Fact-check — after the Guardian search, the model rereads its own
+ *    texts next to the articles found and corrects what they contradict.
+ *    The search windows are never touched: dates and context stay v1's.
  *
  * The schema is strict-mode compatible (every property required,
  * additionalProperties: false) and deliberately has no enums: on Groq,
@@ -12,7 +15,10 @@
  */
 
 /** Bump when the prompt changes — part of the LLM cache key */
-export const PROMPT_VERSION = "p6";
+export const PROMPT_VERSION = "p7";
+
+/** Bump when the fact-check prompt changes — part of its cache key */
+export const CHECK_VERSION = "c1";
 
 /** Accepted Guardian section ids (anything else is dropped in code) */
 export const GUARDIAN_SECTIONS = [
@@ -53,12 +59,12 @@ For each chapter, provide:
 - dateTo: ISO date for search end (YYYY-MM-DD)
 - focusDate: ISO date of the single most significant day inside that window (YYYY-MM-DD)
 - section: Guardian section filter (use "business", "world", "politics", "uk-news", "us-news", "science", "environment", "society", or empty string if broad)
-- synopsis: A RICH narrative paragraph (3-5 sentences, ~60-80 words). Write it like a documentary voiceover: dramatic, factual, cinematic. Include specific numbers, dates, names where historically accurate. This text will be displayed as the chapter body.
+- synopsis: A RICH narrative paragraph (3-5 sentences, ~60-80 words). Write it like a documentary voiceover: dramatic, factual, cinematic. Include specific dates, names and numbers only when you are certain of them. This text will be displayed as the chapter body.
 - aiHint: A brief analytical observation (1-2 sentences) about what the Guardian coverage of this period would reveal — e.g. linguistic patterns, coverage density, editorial blind spots, semantic shifts.
 
 Also provide:
 - subtitle: A documentary subtitle, poetic and evocative (e.g. "The collapse that reshaped global capitalism")
-- interludes: An array of exactly 2 short, powerful statements specific to THIS story. These appear as dramatic red cards between chapters. They should hit hard — use specific numbers, facts, or provocative framings from the event. Examples: "639 billion dollars. One night. One bankruptcy." or "The world stopped in 72 hours." or "52% voted. 100% were affected." Each must be under 15 words.
+- interludes: An array of exactly 2 short, powerful statements specific to THIS story. These appear as dramatic red cards between chapters. They should hit hard through names, places, images or a provocative framing — NEVER numbers, figures, statistics or dates (no digits, no counts written in words). Examples: "A bank fell. Then the world followed." or "The video the world could not unsee." or "A country voted. Nobody had a plan." Each must be under 15 words.
 
 CRITICAL RULES:
 - EVERYTHING must be in English
@@ -70,7 +76,7 @@ CRITICAL RULES:
 - synopsis must be substantive (60-80 words each), not one-line summaries
 - Only use numbers, names and dates you are certain of: no number is better than an approximate or inflated one. Never state that a law passed, a person was convicted or an event happened unless it did
 - keyword should be specific enough to find relevant Guardian articles for that exact moment
-- interludes must be specific to this event, never generic
+- interludes must be specific to this event, never generic, and contain no numbers
 
 Respond with valid JSON only. No markdown fences, no preamble text.`;
 
@@ -83,7 +89,7 @@ Today is ${today}.
 
 Respond with a JSON object containing:
 - "subtitle": string (English, poetic)
-- "interludes": array of 2 short punchy statements specific to this event (English, under 15 words each)
+- "interludes": array of 2 short punchy statements specific to this event (English, under 15 words each, no numbers)
 - "chapters": array of 5 objects, each with: arcLabel, dateRange, keyword, dateFrom, dateTo, focusDate, section, synopsis (60-80 words, dramatic English), aiHint (1-2 sentences about Guardian coverage patterns)`;
 }
 
@@ -123,5 +129,93 @@ export const ORCHESTRATE_SCHEMA: Record<string, unknown> = {
     },
   },
   required: ["subtitle", "interludes", "chapters"],
+  additionalProperties: false,
+};
+
+// ── Fact-check (second, lighter call) ───────────────────
+
+export const CHECK_SYSTEM = `You are the fact-checker of a short documentary narrated by an AI. You receive the draft texts of its 5 chapters and, for each chapter, the real Guardian articles found for that period (date, headline and, for the main one, its summary and opening lines).
+
+Make every text accurate while changing as little as possible:
+- Correct any statement the articles contradict: dates, counts, names, outcomes, who did what, which court or body decided what, and in which order.
+- Also correct statements you know to be false, even if the articles do not cover them.
+- A number, date or detail that the articles do not confirm and you are not certain of must go: remove it or make it general ("thousands", "that summer"). Never replace a guess with another guess.
+- Do not add facts that are not in the articles. Never mention the Guardian, the articles or "sources" in the texts.
+- Keep the documentary voice, English, and the length: synopsis 60-80 words, aiHint 1-2 sentences.
+- arcLabel: keep it unless it states something false or uncertain; then write a new 3-6 word label in the same spirit.
+- aiHint describes what the coverage of that period reveals: keep it consistent with the headlines listed for that chapter.
+- interludes: 2 statements under 15 words with NO numbers, figures or dates; keep them when they already comply and are true.
+
+Return all 5 chapters in order and both interludes, including the texts you did not change. Respond with valid JSON only.`;
+
+export interface CheckArticle {
+  /** YYYY-MM-DD */
+  date: string;
+  title: string;
+  /** Standfirst + opening lines — main article only */
+  summary?: string;
+}
+
+export interface CheckChapterInput {
+  arcTag: string;
+  dateRange: string;
+  arcLabel: string;
+  synopsis: string;
+  aiHint: string;
+  articles: CheckArticle[];
+}
+
+export function buildCheckPrompt(
+  query: string,
+  today: string,
+  chapters: CheckChapterInput[],
+  interludes: [string, string]
+): string {
+  const blocks = chapters.map((ch, i) => {
+    const articles =
+      ch.articles.length > 0
+        ? ch.articles
+            .map((a) => `- ${a.date} · ${a.title}${a.summary ? `\n  Summary: ${a.summary}` : ""}`)
+            .join("\n")
+        : "- (no articles found for this period)";
+    return `CHAPTER ${i + 1} · ${ch.arcTag.toUpperCase()} · ${ch.dateRange}
+arcLabel: ${ch.arcLabel}
+synopsis: ${ch.synopsis}
+aiHint: ${ch.aiHint}
+Guardian articles for this chapter:
+${articles}`;
+  });
+
+  return `Documentary: "${query}"
+Today is ${today}.
+
+${blocks.join("\n\n")}
+
+INTERLUDES
+1. ${interludes[0]}
+2. ${interludes[1]}
+
+Respond with a JSON object: "chapters" (5 objects with arcLabel, synopsis, aiHint) and "interludes" (2 strings).`;
+}
+
+export const CHECK_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    chapters: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          arcLabel: { type: "string" },
+          synopsis: { type: "string" },
+          aiHint: { type: "string" },
+        },
+        required: ["arcLabel", "synopsis", "aiHint"],
+        additionalProperties: false,
+      },
+    },
+    interludes: { type: "array", items: { type: "string" } },
+  },
+  required: ["chapters", "interludes"],
   additionalProperties: false,
 };
